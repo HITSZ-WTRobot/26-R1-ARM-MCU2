@@ -1,0 +1,4 @@
+name = "SCurve"
+pkgname = "VelocityProfile::SCurve"
+version = "0.1.0"
+dependencies = ["VelocityProfile::Core"]

@@ -1,0 +1,288 @@
+#include "arm.hpp"
+
+#include "device.hpp"
+#include "eventflags.hpp"
+#include "main.h"
+#include "motor_pos_controller.hpp"
+#include "motor_vel_controller.hpp"
+#include "pump_ctrl.hpp"
+#include "tim.h"
+
+#include <cstdint>
+
+
+#define ARM_RESET_ANGLE 0.0f
+#define ARM_CATCH_PUSH_ANGLE     250.0f
+#define ARM_CATCH_PUSH_ANGLE_MAX 280.0f
+#define ARM_CATCH_HEIGHT_LOW  -300.0f
+#define ARM_CATCH_HEIGHT_MID  400.0f
+#define ARM_CATCH_HEIGHT_HIGH 1050.0f
+#define ARM_RELEASE_HEIGHT    800.0f
+#define ARM_ROTATE_ANGLE 320.0f
+
+#define PUMP_VALVE_GPIO_Port GPIOE
+#define PUMP_VALVE_Pin       GPIO_PIN_3
+#define PUMP_RELAY_GPIO_Port GPIOE
+#define PUMP_RELAY_Pin       GPIO_PIN_4
+
+using Motor_PosCtrl_t = controllers::MotorPosController;
+using Motor_VelCtrl_t = controllers::MotorVelController;
+
+namespace
+{
+
+controllers::MotorVelController::Config make_arm_catch_vel_ctrl_cfg()
+{
+    controllers::MotorVelController::Config cfg{};
+    cfg.pid.Kp             = 25.0f;
+    cfg.pid.Ki             = 0.15f;
+    cfg.pid.Kd             = 20.0f;
+    cfg.pid.abs_output_max = 5000.0f;
+    return cfg;
+}
+
+controllers::MotorVelController::Config make_arm_rotate_vel_ctrl_cfg()
+{
+    controllers::MotorVelController::Config cfg{};
+    cfg.pid.Kp             = 100.0f;
+    cfg.pid.Ki             = 0.8f;
+    cfg.pid.Kd             = 20.0f;
+    cfg.pid.abs_output_max = 8000.0f;
+    return cfg;
+}
+
+controllers::MotorVelController::Config make_arm_raiseandlower_vel_ctrl_cfg()
+{
+    controllers::MotorVelController::Config cfg{};
+    cfg.pid.Kp             = 100.0f;
+    cfg.pid.Ki             = 0.8f;
+    cfg.pid.Kd             = 1.0f;
+    cfg.pid.abs_output_max = 8000.0f;
+    return cfg;
+}
+
+controllers::MotorPosController::Config make_arm_catch_pos_ctrl_cfg()
+{
+    controllers::MotorPosController::Config cfg{};
+    cfg.velocity_pid.Kp             = 100.0f;
+    cfg.velocity_pid.Ki             = 0.5f;
+    cfg.velocity_pid.Kd             = 0.9f;
+    cfg.velocity_pid.abs_output_max = 5000.0f;
+
+    cfg.position_pid.Kp             = 1.0f;
+    cfg.position_pid.Ki             = 0.002f;
+    cfg.position_pid.Kd             = 0.8f;
+    cfg.position_pid.abs_output_max = 500.0f;
+
+    cfg.pos_vel_freq_ratio = 1;
+    return cfg;
+}
+
+controllers::MotorPosController::Config make_arm_rotate_pos_ctrl_cfg()
+{
+    controllers::MotorPosController::Config cfg{};
+    cfg.velocity_pid.Kp             = 100.0f;
+    cfg.velocity_pid.Ki             = 0.5f;
+    cfg.velocity_pid.Kd             = 0.9f;
+    cfg.velocity_pid.abs_output_max = 8000.0f;
+
+    cfg.position_pid.Kp             = 24.5f;
+    cfg.position_pid.Ki             = 0.42f;
+    cfg.position_pid.Kd             = 100.0f;
+    cfg.position_pid.abs_output_max = 500.0f;
+
+    cfg.pos_vel_freq_ratio = 10;
+    return cfg;
+}
+
+controllers::MotorPosController::Config make_arm_raiseandlower_pos_ctrl_cfg()
+{
+    controllers::MotorPosController::Config cfg{};
+    cfg.velocity_pid.Kp             = 100.0f;
+    cfg.velocity_pid.Ki             = 0.001f;
+    cfg.velocity_pid.Kd             = 0.5f;
+    cfg.velocity_pid.abs_output_max = 8000.0f;
+
+    cfg.position_pid.Kp             = 2.0f;
+    cfg.position_pid.Ki             = 0.01f;
+    cfg.position_pid.Kd             = 0.20f;
+    cfg.position_pid.abs_output_max = 2000.0f;
+
+    cfg.pos_vel_freq_ratio = 1;
+    return cfg;
+}
+
+} 
+
+Pump_Config_t pump_config = {
+    .htim       = &htim3,
+    .channel    = TIM_CHANNEL_3,
+    .valve_port = PUMP_VALVE_GPIO_Port,
+    .pump_port  = PUMP_RELAY_GPIO_Port,
+    .valve_pin  = PUMP_VALVE_Pin,
+    .pump_pin   = PUMP_RELAY_Pin,
+    .invert     = 1,
+};
+
+static Pump_t pump;
+
+osTimerId_t arm_timHandle = nullptr;
+float       arm_pos_height = ARM_CATCH_HEIGHT_LOW;
+
+float arm_vel_out         = 0;
+float arm_vel_out_last    = 0;
+float arm_vel_rotate      = 0;
+float arm_vel_rotate_last = 0;
+float arm_vel_height      = 0;
+float arm_vel_height_last = 0;
+
+osThreadId_t         ArmHandle = nullptr;
+const osThreadAttr_t arm_attributes = {
+    .name       = "arm",
+    .stack_size = 128 * 8,
+    .priority   = (osPriority_t) osPriorityNormal1,
+};
+
+
+Motor_PosCtrl_t* pos_rotate_motor        = nullptr;
+Motor_PosCtrl_t* pos_raiseandlower_motor = nullptr;
+Motor_PosCtrl_t* pos_catch_motor         = nullptr;
+
+Motor_VelCtrl_t* vel_rotate_motor        = nullptr;
+Motor_VelCtrl_t* vel_raiseandlower_motor = nullptr;
+Motor_VelCtrl_t* vel_catch_motor         = nullptr;
+
+void Arm_TIM_Callback(void)
+{
+    pos_raiseandlower_motor->update();
+    pos_catch_motor->update();
+    pos_rotate_motor->update();
+    vel_raiseandlower_motor->update();
+    vel_rotate_motor->update();
+    vel_catch_motor->update();
+}
+
+static void Arm_Contrl_Task(void* argument)
+{
+    (void)argument;
+    for (;;)
+    {
+        if (arm_vel_out_last != 0)
+        {
+            pos_catch_motor->disable();
+            vel_catch_motor->enable();
+            vel_catch_motor->setRef(arm_vel_out);
+        }
+        if (arm_vel_height_last != 0)
+        {
+            pos_raiseandlower_motor->disable();
+            vel_raiseandlower_motor->enable();
+            vel_raiseandlower_motor->setRef(arm_vel_height);
+        }
+        if (arm_vel_rotate_last != 0)
+        {
+            pos_rotate_motor->disable();
+            vel_rotate_motor->enable();
+            vel_rotate_motor->setRef(arm_vel_rotate);
+        }
+        osDelay(10);
+    }
+}
+
+static void Arm_softTIM(void* argument)
+{
+    (void)argument;
+
+    static uint8_t pump_state   = 0;
+    static uint8_t height_state = 0;
+    static uint8_t rotate_state = 0;
+
+    if ((osEventFlagsWait(flags_id, 0x00000008U, osFlagsWaitAny, 0) & 0xFF000008U) == 0x00000008U)
+    {
+        vel_raiseandlower_motor->disable();
+        pos_raiseandlower_motor->enable();
+        switch (height_state)
+        {
+        case 0:
+            arm_pos_height = ARM_CATCH_HEIGHT_LOW;
+            break;
+        case 1:
+            arm_pos_height = ARM_CATCH_HEIGHT_MID;
+            break;
+        default:
+            arm_pos_height = ARM_CATCH_HEIGHT_HIGH;
+            break;
+        }
+        pos_raiseandlower_motor->setRef(arm_pos_height);
+        height_state = (height_state + 1) % 3;
+    }
+
+    if ((osEventFlagsWait(flags_id, 0x00000020U, osFlagsWaitAny, 0) & 0xFF000020U) == 0x00000020U)
+    {
+        vel_rotate_motor->disable();
+        pos_rotate_motor->enable();
+        if (rotate_state == 0)
+        {
+            pos_rotate_motor->setRef(ARM_RESET_ANGLE);
+            rotate_state = 1;
+        }
+        else
+        {
+            pos_rotate_motor->setRef(ARM_ROTATE_ANGLE);
+            rotate_state = 0;
+        }
+    }
+
+    if ((osEventFlagsWait(flags_id, 0x00000040U, osFlagsWaitAny, 0) & 0xFF000040U) == 0x00000040U)
+    {
+        if (pump_state == 0)
+        {
+            pump_state = 1;
+            Pump_Catch(&pump, 1);
+        }
+        else
+        {
+            pump_state = 0;
+            Pump_Release(&pump, 1);
+        }
+    }
+}
+
+void Arm_Init(void)
+{
+    (void)ARM_CATCH_PUSH_ANGLE;
+    (void)ARM_CATCH_PUSH_ANGLE_MAX;
+    (void)ARM_RELEASE_HEIGHT;
+
+    Pump_Init(&pump, &pump_config);
+
+    vel_catch_motor = new Motor_VelCtrl_t(catch_motor, make_arm_catch_vel_ctrl_cfg());
+    pos_catch_motor = new Motor_PosCtrl_t(catch_motor, make_arm_catch_pos_ctrl_cfg());
+    vel_rotate_motor = new Motor_VelCtrl_t(rotate_motor, make_arm_rotate_vel_ctrl_cfg());
+    pos_rotate_motor = new Motor_PosCtrl_t(rotate_motor, make_arm_rotate_pos_ctrl_cfg());
+    vel_raiseandlower_motor = new Motor_VelCtrl_t(raiseandlower_motor, make_arm_raiseandlower_vel_ctrl_cfg());
+    pos_raiseandlower_motor = new Motor_PosCtrl_t(raiseandlower_motor, make_arm_raiseandlower_pos_ctrl_cfg());
+
+    pos_catch_motor->disable();
+    vel_catch_motor->disable();
+    pos_raiseandlower_motor->disable();
+    vel_raiseandlower_motor->disable();
+    vel_rotate_motor->disable();
+    pos_rotate_motor->disable();
+
+    ArmHandle     = osThreadNew(Arm_Contrl_Task, NULL, &arm_attributes);
+    arm_timHandle = osTimerNew(Arm_softTIM, osTimerPeriodic, NULL, NULL);
+    osTimerStart(arm_timHandle, 10);
+}
+
+void APP_Arm_BeforeUpdate()
+{
+    Arm_Init();
+}
+
+void APP_Arm_Update_1kHz()
+{
+    Arm_TIM_Callback();
+}
+
+void APP_Arm_Update_100Hz() {}
