@@ -1,4 +1,0 @@
-name = "CANDriver"
-pkgname = "bsp::CANDriver"
-version = "0.1.0"
-dependencies = ["stm32cubemx"]
