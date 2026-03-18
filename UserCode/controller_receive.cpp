@@ -2,6 +2,7 @@
 #include "watchdog.hpp"
 #define RAWDATA_SIZE 14   // 每一帧大小
 #define BUFFER_SIZE 14    // DMA接收缓冲区大小
+#define RX_DMA_BUF_SIZE 64
 #define FRAME_HEADER 0xAA // 帧头
 #define FRAME_TAIL 0xBB   // 帧尾
 #define BUTTON_NUM 9      // 按钮个数
@@ -15,7 +16,7 @@ static inline uint32_t EnterCriticalSection() {
   return primask;
 }
 
-static inline void ExitCriticalSection(const uint32_t primask) {
+static inline void ExitCriticalSection(const uint32_t primask) {// 恢复之前的中断状态
   if ((primask & 1U) == 0U) {
     __enable_irq();
   }
@@ -26,6 +27,9 @@ uint32_t bbb = 0;
 
 uint32_t decode_count = 0;
 uint8_t buffer[14];
+static uint8_t rx_dma_buf[RX_DMA_BUF_SIZE];
+static uint8_t rx_frame_buf[RAWDATA_SIZE];
+static uint8_t rx_frame_fill = 0;
 uint32_t decodesuccess_count = 0;             // 成功解码次数
 bool decode_enable = false;                   // 解码使能标志
 bool is_controller_connected = true;          // 遥控器连接状态
@@ -57,6 +61,46 @@ const osThreadAttr_t controller_attributes = {
     .priority = (osPriority_t)osPriorityHigh,
 };
 
+static void Auto_arm_control()
+{
+  constexpr float kAutoRetreatArmLengthM = 0.35f;
+
+  Arm_SetAutoRetreatLength(kAutoRetreatArmLengthM);
+
+  if (Arm_AutoCatchBusy()) {
+    return;
+  }
+
+  // button0->低卷轴, button2->中卷轴, button4->高卷轴
+  if (button_status & (1U << 0)) {
+    (void)Arm_AutoCatchStart(ARM_AUTO_CATCH_LOW);
+  } else if (button_status & (1U << 2)) {
+    (void)Arm_AutoCatchStart(ARM_AUTO_CATCH_MID);
+  } else if (button_status & (1U << 4)) {
+    (void)Arm_AutoCatchStart(ARM_AUTO_CATCH_HIGH);
+  }
+}
+
+static void ProcessRxBytes(const uint8_t *data, uint16_t size) {
+  for (uint16_t i = 0; i < size; ++i) {
+    const uint8_t byte = data[i];
+
+    // 等待帧头，避免固定分包错位导致长期解码失败。
+    if (rx_frame_fill == 0U && byte != FRAME_HEADER) {
+      continue;
+    }
+
+    rx_frame_buf[rx_frame_fill++] = byte;
+
+    if (rx_frame_fill >= RAWDATA_SIZE) {
+      decode_count++;
+      memcpy(buffer, rx_frame_buf, RAWDATA_SIZE);
+      Buffer_Decode();
+      rx_frame_fill = 0U;
+    }
+  }
+}
+
 void Controller_receiver_Init(void) {
   for (int i = 0; i < BUTTON_NUM; i++) {
     button[i] = 0;
@@ -64,15 +108,23 @@ void Controller_receiver_Init(void) {
   }
   controller_watchdog.feed(CONTROLLER_WATCHDOG_TIMEOUT_MS);
   osThreadNew(controller_task, NULL, &controller_attributes);
-  HAL_UART_Receive_DMA(&huart1, buffer, 14);
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_dma_buf, RX_DMA_BUF_SIZE);
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART1) {
-    decode_count++;
+    ProcessRxBytes(rx_dma_buf, RX_DMA_BUF_SIZE);
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_dma_buf, RX_DMA_BUF_SIZE);
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  }
+}
 
-    Buffer_Decode();
-    HAL_UART_Receive_DMA(&huart1, buffer, BUFFER_SIZE);
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+  if (huart->Instance == USART1) {
+    ProcessRxBytes(rx_dma_buf, Size);
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_dma_buf, RX_DMA_BUF_SIZE);
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
   }
 }
 
@@ -82,7 +134,7 @@ void controller_task(void *argument) {
     if ((osEventFlagsWait(flags_id, 0x00000010U, osFlagsWaitAny, 0) &
          0xFF000010U) == 0x00000010U) {
       joystick_mode =
-          (JOYSTICK_MODE_E)(((int)joystick_mode + 1) % 3); // 三种模式循环切换
+          (JOYSTICK_MODE_E)(((int)joystick_mode + 1) % 4); // 四种模式循环切换
     }
 
     int16_t lx_t = 0;
@@ -126,6 +178,16 @@ void controller_task(void *argument) {
       arm_vel_height = 0;
       arm_vel_rotate = 0;
       arm_vel_out = 0;
+      break;
+    case AUTO_ALIGN_MODE:
+      Auto_arm_control();
+      clamp_vel_out = 0;
+      clamp_vel_roll = 0;
+      clamp_vel_yaw = 0;
+      arm_vel_height = 0;
+      arm_vel_rotate = 0;
+      arm_vel_out = 0;
+      
       break;
     default:
       break;

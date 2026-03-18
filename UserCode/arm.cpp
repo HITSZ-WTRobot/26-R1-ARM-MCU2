@@ -19,6 +19,18 @@
 #define ARM_RELEASE_HEIGHT 800.0f
 #define ARM_ROTATE_ANGLE 320.0f
 
+#define ARM_AUTO_WAIT_HEIGHT_MS 1200U
+#define ARM_AUTO_WAIT_ROTATE_MS 900U
+#define ARM_AUTO_WAIT_PUMP_ON_MS 250U
+#define ARM_AUTO_WAIT_PUSH_MS 900U
+#define ARM_AUTO_WAIT_RELEASE_HEIGHT_MS 1200U
+#define ARM_AUTO_WAIT_ROTATE_BACK_MS 900U
+#define ARM_AUTO_WAIT_RELEASE_MS 250U
+#define ARM_AUTO_RETRACT_PUSH_ANGLE 0.0f
+#define ARM_AUTO_RETREAT_SPEED_MPS 0.25f
+#define ARM_AUTO_RETREAT_MIN_TIME_MS 300U
+#define ARM_AUTO_RETREAT_MAX_TIME_MS 2500U
+
 #define PUMP_VALVE_GPIO_Port GPIOE
 #define PUMP_VALVE_Pin GPIO_PIN_3
 #define PUMP_RELAY_GPIO_Port GPIOE
@@ -38,6 +50,29 @@ Pump_Config_t pump_config = {
 };
 
 static Pump_t pump;
+
+enum AutoCatchState {
+  AUTO_CATCH_IDLE = 0,
+  AUTO_CATCH_GO_HEIGHT,
+  AUTO_CATCH_ROTATE_TO_CATCH,
+  AUTO_CATCH_PUMP_ON,
+  AUTO_CATCH_PUSH_OUT,
+  AUTO_CATCH_VEHICLE_RETREAT,
+  AUTO_CATCH_GO_RELEASE_HEIGHT,
+  AUTO_CATCH_ROTATE_BACK,
+  AUTO_CATCH_RELEASE,
+};
+
+static volatile AutoCatchState g_auto_catch_state = AUTO_CATCH_IDLE;
+static volatile uint32_t g_auto_catch_state_start_ms = 0;
+static volatile float g_auto_catch_target_height = ARM_CATCH_HEIGHT_LOW;
+static volatile float g_auto_retreat_length_m = 0.35f;
+
+__attribute__((weak)) void Arm_AutoVehicleMove(float retreat_length_m,
+                                               bool enable) {
+  (void)retreat_length_m;
+  (void)enable;
+}
 
 osTimerId_t arm_timHandle = nullptr;
 float arm_pos_height = ARM_CATCH_HEIGHT_LOW;
@@ -95,12 +130,161 @@ static void Arm_Contrl_Task(void *argument) {
   }
 }
 
+static uint32_t AutoRetreatDurationMs(float retreat_length_m) {
+  if (retreat_length_m < 0.0f) {
+    retreat_length_m = -retreat_length_m;
+  }
+  float ms = retreat_length_m / ARM_AUTO_RETREAT_SPEED_MPS * 1000.0f;
+  if (ms < (float)ARM_AUTO_RETREAT_MIN_TIME_MS) {
+    ms = (float)ARM_AUTO_RETREAT_MIN_TIME_MS;
+  }
+  if (ms > (float)ARM_AUTO_RETREAT_MAX_TIME_MS) {
+    ms = (float)ARM_AUTO_RETREAT_MAX_TIME_MS;
+  }
+  return (uint32_t)ms;
+}
+
+static bool AutoStepTimeout(uint32_t wait_ms, uint32_t now_ms) {
+  return (uint32_t)(now_ms - g_auto_catch_state_start_ms) >= wait_ms;
+}
+
+static void AutoCatchEnterState(AutoCatchState state, uint32_t now_ms) {
+  g_auto_catch_state = state;
+  g_auto_catch_state_start_ms = now_ms;
+}
+
+bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
+  if (g_auto_catch_state != AUTO_CATCH_IDLE) {
+    return false;
+  }
+
+  switch (level) {
+  case ARM_AUTO_CATCH_LOW:
+    g_auto_catch_target_height = ARM_CATCH_HEIGHT_LOW;
+    break;
+  case ARM_AUTO_CATCH_MID:
+    g_auto_catch_target_height = ARM_CATCH_HEIGHT_MID;
+    break;
+  case ARM_AUTO_CATCH_HIGH:
+    g_auto_catch_target_height = ARM_CATCH_HEIGHT_HIGH;
+    break;
+  default:
+    return false;
+  }
+
+  arm_vel_out = 0;
+  arm_vel_rotate = 0;
+  arm_vel_height = 0;
+  arm_vel_out_last = 0;
+  arm_vel_rotate_last = 0;
+  arm_vel_height_last = 0;
+
+  AutoCatchEnterState(AUTO_CATCH_GO_HEIGHT, HAL_GetTick());
+  return true;
+}
+
+bool Arm_AutoCatchBusy() { return g_auto_catch_state != AUTO_CATCH_IDLE; }
+
+void Arm_SetAutoRetreatLength(float length_m) {
+  if (length_m < 0.05f) {
+    length_m = 0.05f;
+  }
+  g_auto_retreat_length_m = length_m;
+}
+
 static void Arm_softTIM(void *argument) {
   (void)argument;
 
   static uint8_t pump_state = 0;
   static uint8_t height_state = 0;
   static uint8_t rotate_state = 0;
+
+  const uint32_t now_ms = HAL_GetTick();
+
+  if (g_auto_catch_state != AUTO_CATCH_IDLE) {
+    switch (g_auto_catch_state) {
+    case AUTO_CATCH_GO_HEIGHT:
+      vel_raiseandlower_motor->disable();
+      pos_raiseandlower_motor->enable();
+      pos_raiseandlower_motor->setRef(g_auto_catch_target_height);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_HEIGHT_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_ROTATE_TO_CATCH, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_ROTATE_TO_CATCH:
+      vel_rotate_motor->disable();
+      pos_rotate_motor->enable();
+      pos_rotate_motor->setRef(ARM_ROTATE_ANGLE);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_PUMP_ON, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_PUMP_ON:
+      Pump_Catch(&pump, 1);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_PUMP_ON_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_PUSH_OUT, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_PUSH_OUT:
+      vel_catch_motor->disable();
+      pos_catch_motor->enable();
+      pos_catch_motor->setRef(ARM_CATCH_PUSH_ANGLE);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_PUSH_MS, now_ms)) {
+        Arm_AutoVehicleMove(g_auto_retreat_length_m, true);
+        AutoCatchEnterState(AUTO_CATCH_VEHICLE_RETREAT, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_VEHICLE_RETREAT:
+      if (AutoStepTimeout(AutoRetreatDurationMs(g_auto_retreat_length_m), now_ms)) {
+        Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
+        AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_GO_RELEASE_HEIGHT:
+      vel_raiseandlower_motor->disable();
+      pos_raiseandlower_motor->enable();
+      pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_HEIGHT_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_ROTATE_BACK, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_ROTATE_BACK:
+      vel_rotate_motor->disable();
+      pos_rotate_motor->enable();
+      pos_rotate_motor->setRef(ARM_RESET_ANGLE);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_RELEASE, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_RELEASE:
+      vel_catch_motor->disable();
+      pos_catch_motor->enable();
+      pos_catch_motor->setRef(ARM_AUTO_RETRACT_PUSH_ANGLE);
+      Pump_Release(&pump, 1);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_MS, now_ms)) {
+        arm_vel_out = 0;
+        arm_vel_rotate = 0;
+        arm_vel_height = 0;
+        arm_vel_out_last = 0;
+        arm_vel_rotate_last = 0;
+        arm_vel_height_last = 0;
+        g_auto_catch_state = AUTO_CATCH_IDLE;
+      }
+      break;
+
+    case AUTO_CATCH_IDLE:
+    default:
+      break;
+    }
+    return;
+  }
 
   if ((osEventFlagsWait(flags_id, 0x00000008U, osFlagsWaitAny, 0) &
        0xFF000008U) == 0x00000008U) {
