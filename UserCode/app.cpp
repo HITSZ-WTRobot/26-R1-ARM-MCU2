@@ -5,6 +5,7 @@
 #include "controller_receive.hpp"
 #include "device.hpp"
 #include "eventflags.hpp"
+#include "interboard_comm.hpp"
 #include "tim.h"
 
 static osTimerId_t controller_timHandle = nullptr;
@@ -30,6 +31,7 @@ extern "C" void Init(void* argument)
 
     flags_create();
     APP_Device_Init();
+    InterboardComm_Init();
     Clamp_Init();
     Arm_Init();
     Controller_receiver_Init();

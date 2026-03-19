@@ -2,6 +2,7 @@
 
 #include "device.hpp"
 #include "eventflags.hpp"
+#include "interboard_comm.hpp"
 #include "main.h"
 #include "clamp.hpp"
 #include "motor_pos_controller.hpp"
@@ -70,7 +71,8 @@ static volatile float g_auto_retreat_length_m = 0.15f;
 
 __attribute__((weak)) void Arm_AutoVehicleMove(float retreat_length_m,
                                                bool enable) {
-
+  (void)retreat_length_m;
+  InterboardComm_SendRetreatCommand(enable);
 }
 
 osTimerId_t arm_timHandle = nullptr;
@@ -274,6 +276,7 @@ static void Arm_softTIM(void *argument) {
       break;
 
     case AUTO_CATCH_VEHICLE_RETREAT: // 推出后退一段距离，避免物体被抓起后贴着墙壁等障碍物
+      Arm_AutoVehicleMove(g_auto_retreat_length_m, true);
       if (AutoStepTimeout(AutoRetreatDurationMs(g_auto_retreat_length_m), now_ms)) {
         Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
         AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
