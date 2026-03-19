@@ -3,6 +3,7 @@
 #include "device.hpp"
 #include "eventflags.hpp"
 #include "main.h"
+#include "clamp.hpp"
 #include "motor_pos_controller.hpp"
 #include "motor_vel_controller.hpp"
 #include "pump_ctrl.hpp"
@@ -19,11 +20,11 @@
 #define ARM_RELEASE_HEIGHT 800.0f
 #define ARM_ROTATE_ANGLE 320.0f
 
-#define ARM_AUTO_WAIT_HEIGHT_MS 1200U
-#define ARM_AUTO_WAIT_ROTATE_MS 900U
-#define ARM_AUTO_WAIT_PUMP_ON_MS 250U
-#define ARM_AUTO_WAIT_PUSH_MS 900U
-#define ARM_AUTO_WAIT_RELEASE_HEIGHT_MS 1200U
+#define ARM_AUTO_WAIT_HEIGHT_MS 600U
+#define ARM_AUTO_WAIT_ROTATE_MS 300U
+#define ARM_AUTO_WAIT_PUMP_ON_MS 100U
+#define ARM_AUTO_WAIT_PUSH_MS 500U
+#define ARM_AUTO_WAIT_RELEASE_HEIGHT_MS 600U
 #define ARM_AUTO_WAIT_ROTATE_BACK_MS 900U
 #define ARM_AUTO_WAIT_RELEASE_MS 250U
 #define ARM_AUTO_RETRACT_PUSH_ANGLE 0.0f
@@ -54,8 +55,7 @@ static Pump_t pump;
 enum AutoCatchState {
   AUTO_CATCH_IDLE = 0,
   AUTO_CATCH_GO_HEIGHT,
-  AUTO_CATCH_ROTATE_TO_CATCH,
-  AUTO_CATCH_PUMP_ON,
+  AUTO_CATCH_ROTATE_AND_PUMP,
   AUTO_CATCH_PUSH_OUT,
   AUTO_CATCH_VEHICLE_RETREAT,
   AUTO_CATCH_GO_RELEASE_HEIGHT,
@@ -66,12 +66,11 @@ enum AutoCatchState {
 static volatile AutoCatchState g_auto_catch_state = AUTO_CATCH_IDLE;
 static volatile uint32_t g_auto_catch_state_start_ms = 0;
 static volatile float g_auto_catch_target_height = ARM_CATCH_HEIGHT_LOW;
-static volatile float g_auto_retreat_length_m = 0.35f;
+static volatile float g_auto_retreat_length_m = 0.15f;
 
 __attribute__((weak)) void Arm_AutoVehicleMove(float retreat_length_m,
                                                bool enable) {
-  (void)retreat_length_m;
-  (void)enable;
+
 }
 
 osTimerId_t arm_timHandle = nullptr;
@@ -148,6 +147,12 @@ static bool AutoStepTimeout(uint32_t wait_ms, uint32_t now_ms) {
   return (uint32_t)(now_ms - g_auto_catch_state_start_ms) >= wait_ms;
 }
 
+static uint32_t AutoRotateAndPumpWaitMs() {
+  return (ARM_AUTO_WAIT_ROTATE_MS > ARM_AUTO_WAIT_PUMP_ON_MS)
+             ? ARM_AUTO_WAIT_ROTATE_MS
+             : ARM_AUTO_WAIT_PUMP_ON_MS;
+}
+
 static void AutoCatchEnterState(AutoCatchState state, uint32_t now_ms) {
   g_auto_catch_state = state;
   g_auto_catch_state_start_ms = now_ms;
@@ -178,12 +183,48 @@ bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   arm_vel_out_last = 0;
   arm_vel_rotate_last = 0;
   arm_vel_height_last = 0;
+  Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
 
   AutoCatchEnterState(AUTO_CATCH_GO_HEIGHT, HAL_GetTick());
   return true;
 }
 
 bool Arm_AutoCatchBusy() { return g_auto_catch_state != AUTO_CATCH_IDLE; }
+
+void Arm_AutoCatchAbortKeepPump() {
+  if (g_auto_catch_state == AUTO_CATCH_IDLE) {
+    return;
+  }
+
+  Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
+
+  if (pos_catch_motor) {
+    pos_catch_motor->disable();
+  }
+  if (vel_catch_motor) {
+    vel_catch_motor->disable();
+  }
+  if (pos_rotate_motor) {
+    pos_rotate_motor->disable();
+  }
+  if (vel_rotate_motor) {
+    vel_rotate_motor->disable();
+  }
+  if (pos_raiseandlower_motor) {
+    pos_raiseandlower_motor->disable();
+  }
+  if (vel_raiseandlower_motor) {
+    vel_raiseandlower_motor->disable();
+  }
+
+  arm_vel_out = 0;
+  arm_vel_rotate = 0;
+  arm_vel_height = 0;
+  arm_vel_out_last = 0;
+  arm_vel_rotate_last = 0;
+  arm_vel_height_last = 0;
+  g_auto_catch_state = AUTO_CATCH_IDLE;
+}
 
 void Arm_SetAutoRetreatLength(float length_m) {
   if (length_m < 0.05f) {
@@ -203,32 +244,26 @@ static void Arm_softTIM(void *argument) {
 
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
-    case AUTO_CATCH_GO_HEIGHT:
+    case AUTO_CATCH_GO_HEIGHT:// 开始自动抓取流程，先去目标高度
       vel_raiseandlower_motor->disable();
       pos_raiseandlower_motor->enable();
       pos_raiseandlower_motor->setRef(g_auto_catch_target_height);
       if (AutoStepTimeout(ARM_AUTO_WAIT_HEIGHT_MS, now_ms)) {
-        AutoCatchEnterState(AUTO_CATCH_ROTATE_TO_CATCH, now_ms);
+        AutoCatchEnterState(AUTO_CATCH_ROTATE_AND_PUMP, now_ms);
       }
       break;
 
-    case AUTO_CATCH_ROTATE_TO_CATCH:
+    case AUTO_CATCH_ROTATE_AND_PUMP: // 到达目标高度后并行旋转和吸泵
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_ROTATE_ANGLE);
-      if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_MS, now_ms)) {
-        AutoCatchEnterState(AUTO_CATCH_PUMP_ON, now_ms);
-      }
-      break;
-
-    case AUTO_CATCH_PUMP_ON:
       Pump_Catch(&pump, 1);
-      if (AutoStepTimeout(ARM_AUTO_WAIT_PUMP_ON_MS, now_ms)) {
+      if (AutoStepTimeout(AutoRotateAndPumpWaitMs(), now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_PUSH_OUT, now_ms);
       }
       break;
 
-    case AUTO_CATCH_PUSH_OUT:
+    case AUTO_CATCH_PUSH_OUT: // 吸稳后继续向前推一段距离，增加抓取稳定性
       vel_catch_motor->disable();
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_CATCH_PUSH_ANGLE);
@@ -238,14 +273,14 @@ static void Arm_softTIM(void *argument) {
       }
       break;
 
-    case AUTO_CATCH_VEHICLE_RETREAT:
+    case AUTO_CATCH_VEHICLE_RETREAT: // 推出后退一段距离，避免物体被抓起后贴着墙壁等障碍物
       if (AutoStepTimeout(AutoRetreatDurationMs(g_auto_retreat_length_m), now_ms)) {
         Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
         AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
       }
       break;
 
-    case AUTO_CATCH_GO_RELEASE_HEIGHT:
+    case AUTO_CATCH_GO_RELEASE_HEIGHT: // 退完后去释放高度准备放下物体
       vel_raiseandlower_motor->disable();
       pos_raiseandlower_motor->enable();
       pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
@@ -254,7 +289,7 @@ static void Arm_softTIM(void *argument) {
       }
       break;
 
-    case AUTO_CATCH_ROTATE_BACK:
+    case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_RESET_ANGLE);
@@ -263,12 +298,13 @@ static void Arm_softTIM(void *argument) {
       }
       break;
 
-    case AUTO_CATCH_RELEASE:
+    case AUTO_CATCH_RELEASE: // 旋转回初始位置后关闭吸泵放下物体
       vel_catch_motor->disable();
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_AUTO_RETRACT_PUSH_ANGLE);
       Pump_Release(&pump, 1);
       if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_MS, now_ms)) {
+        Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
         arm_vel_out = 0;
         arm_vel_rotate = 0;
         arm_vel_height = 0;

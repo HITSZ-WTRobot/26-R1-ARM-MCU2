@@ -22,6 +22,7 @@ extern float arm_vel_height_last;
 
 bool Arm_AutoCatchStart(ArmAutoCatchLevel level);
 bool Arm_AutoCatchBusy();
+void Arm_AutoCatchAbortKeepPump();
 void Arm_SetAutoRetreatLength(float length_m);
 
 void APP_Arm_BeforeUpdate();

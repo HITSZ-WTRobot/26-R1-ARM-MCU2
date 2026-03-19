@@ -65,6 +65,11 @@ static void Auto_arm_control()
 {
   constexpr float kAutoRetreatArmLengthM = 0.35f;
 
+  if (button_status & (1U << 8)) {
+    Arm_AutoCatchAbortKeepPump();
+    return;
+  }
+
   Arm_SetAutoRetreatLength(kAutoRetreatArmLengthM);
 
   if (Arm_AutoCatchBusy()) {
@@ -181,12 +186,18 @@ void controller_task(void *argument) {
       break;
     case AUTO_ALIGN_MODE:
       Auto_arm_control();
-      clamp_vel_out = 0;
+      if (!Arm_AutoCatchBusy()) {
+        clamp_vel_out = 0;
+      }
       clamp_vel_roll = 0;
       clamp_vel_yaw = 0;
       arm_vel_height = 0;
       arm_vel_rotate = 0;
       arm_vel_out = 0;
+
+      if (button_status & (1U << 8)) {
+        clamp_vel_out = 0;
+      }
       
       break;
     default:
