@@ -1,4 +1,5 @@
 #include "controller_receive.hpp"
+#include "interboard_comm.hpp"
 #include "watchdog.hpp"
 #define RAWDATA_SIZE 14   // 每一帧大小
 #define BUFFER_SIZE 14    // DMA接收缓冲区大小
@@ -30,6 +31,7 @@ uint8_t buffer[14];
 static uint8_t rx_dma_buf[RX_DMA_BUF_SIZE];
 static uint8_t rx_frame_buf[RAWDATA_SIZE];
 static uint8_t rx_frame_fill = 0;
+static uint8_t interboard_uart4_rx_byte = 0;
 uint32_t decodesuccess_count = 0;             // 成功解码次数
 bool decode_enable = false;                   // 解码使能标志
 bool is_controller_connected = true;          // 遥控器连接状态
@@ -64,6 +66,9 @@ const osThreadAttr_t controller_attributes = {
 static void Auto_arm_control()
 {
   constexpr float kAutoRetreatArmLengthM = 0.35f;
+  constexpr int32_t kAutoRetreatTargetXmm = -350;
+  constexpr int32_t kAutoRetreatTargetYmm = 0;
+  constexpr int32_t kAutoRetreatTargetYawmm = 0;
 
   if (button_status & (1U << 8)) {
     Arm_AutoCatchAbortKeepPump();
@@ -76,13 +81,25 @@ static void Auto_arm_control()
     return;
   }
 
-  // button0->低卷轴, button2->中卷轴, button4->高卷轴
+  // button0->低卷轴, button2->中卷轴, button6->高卷轴
   if (button_status & (1U << 0)) {
-    (void)Arm_AutoCatchStart(ARM_AUTO_CATCH_LOW);
+    if (Arm_AutoCatchStart(ARM_AUTO_CATCH_LOW)) {
+      InterboardComm_SendTargetMm(kAutoRetreatTargetXmm,
+                                  kAutoRetreatTargetYmm,
+                                  kAutoRetreatTargetYawmm);
+    }
   } else if (button_status & (1U << 2)) {
-    (void)Arm_AutoCatchStart(ARM_AUTO_CATCH_MID);
-  } else if (button_status & (1U << 4)) {
-    (void)Arm_AutoCatchStart(ARM_AUTO_CATCH_HIGH);
+    if (Arm_AutoCatchStart(ARM_AUTO_CATCH_MID)) {
+      InterboardComm_SendTargetMm(kAutoRetreatTargetXmm,
+                                  kAutoRetreatTargetYmm,
+                                  kAutoRetreatTargetYawmm);
+    }
+  } else if (button_status & (1U << 6)) {
+    if (Arm_AutoCatchStart(ARM_AUTO_CATCH_HIGH)) {
+      InterboardComm_SendTargetMm(kAutoRetreatTargetXmm,
+                                  kAutoRetreatTargetYmm,
+                                  kAutoRetreatTargetYawmm);
+    }
   }
 }
 
@@ -115,6 +132,8 @@ void Controller_receiver_Init(void) {
   osThreadNew(controller_task, NULL, &controller_attributes);
   HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_dma_buf, RX_DMA_BUF_SIZE);
   __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+
+  (void)HAL_UART_Receive_IT(&huart4, &interboard_uart4_rx_byte, 1);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
@@ -122,6 +141,23 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     ProcessRxBytes(rx_dma_buf, RX_DMA_BUF_SIZE);
     HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_dma_buf, RX_DMA_BUF_SIZE);
     __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  } else if (huart->Instance == UART4) {
+    const uint8_t rx_byte = interboard_uart4_rx_byte;
+    if (HAL_UART_Receive_IT(&huart4, &interboard_uart4_rx_byte, 1) != HAL_OK) {
+      return;
+    }
+    InterboardComm_OnUartByte(rx_byte);
+  }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == UART4) {
+    __HAL_UART_CLEAR_PEFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_OREFLAG(huart);
+
+    (void)HAL_UART_Receive_IT(&huart4, &interboard_uart4_rx_byte, 1);
   }
 }
 
@@ -250,7 +286,12 @@ void Buffer_Decode(void) {
       button_status |= (1 << i);
     }
   }
-  bbb = osEventFlagsSet(flags_id, button_status);
+  uint32_t publish_flags = button_status;
+  if (joystick_mode == AUTO_ALIGN_MODE) {
+    // 自动对齐模式下仅保留模式切换键事件，避免其他任务消费同一按键位产生冲突。
+    publish_flags &= (1U << 4);
+  }
+  bbb = osEventFlagsSet(flags_id, publish_flags);
   LX_T = (int16_t)LX;
   LY_T = (int16_t)LY;
   RX_T = (int16_t)RX;

@@ -185,7 +185,7 @@ bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   arm_vel_out_last = 0;
   arm_vel_rotate_last = 0;
   arm_vel_height_last = 0;
-  Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
+  //Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
 
   AutoCatchEnterState(AUTO_CATCH_GO_HEIGHT, HAL_GetTick());
   return true;
