@@ -2,15 +2,91 @@
 
 #include "device.hpp"
 #include "eventflags.hpp"
-#include "interboard_comm.hpp"
 #include "main.h"
-#include "clamp.hpp"
+#include "gpio.h"
 #include "motor_pos_controller.hpp"
 #include "motor_vel_controller.hpp"
-#include "pump_ctrl.hpp"
 #include "tim.h"
 
 #include <cstdint>
+
+typedef struct {
+  TIM_HandleTypeDef *htim;
+  uint32_t channel;
+  GPIO_TypeDef *valve_port;
+  GPIO_TypeDef *pump_port;
+  uint16_t valve_pin;
+  uint16_t pump_pin;
+  uint8_t invert;
+} Pump_Config_t;
+
+typedef struct {
+  TIM_HandleTypeDef *htim;
+  uint32_t channel;
+  GPIO_TypeDef *valve_port;
+  GPIO_TypeDef *pump_port;
+  uint16_t valve_pin;
+  uint16_t pump_pin;
+  uint8_t invert;
+} Pump_t;
+
+static void Pump_Init(Pump_t *hpump, const Pump_Config_t *config) {
+  if (hpump == nullptr || config == nullptr) {
+    return;
+  }
+
+  hpump->htim = config->htim;
+  hpump->channel = config->channel;
+  hpump->valve_port = config->valve_port;
+  hpump->pump_port = config->pump_port;
+  hpump->pump_pin = config->pump_pin;
+  hpump->valve_pin = config->valve_pin;
+  hpump->invert = config->invert;
+}
+
+static void Pump_ValveOn(Pump_t *hpump) {
+  if (hpump == nullptr || hpump->valve_port == nullptr) {
+    return;
+  }
+  HAL_GPIO_WritePin(hpump->valve_port, hpump->valve_pin, GPIO_PIN_SET);
+}
+
+static void Pump_ValveOff(Pump_t *hpump) {
+  if (hpump == nullptr || hpump->valve_port == nullptr) {
+    return;
+  }
+  HAL_GPIO_WritePin(hpump->valve_port, hpump->valve_pin, GPIO_PIN_RESET);
+}
+
+static void Pump_RelayOn(Pump_t *hpump) {
+  if (hpump == nullptr || hpump->pump_port == nullptr) {
+    return;
+  }
+  HAL_GPIO_WritePin(hpump->pump_port, hpump->pump_pin, GPIO_PIN_SET);
+}
+
+static void Pump_RelayOff(Pump_t *hpump) {
+  if (hpump == nullptr || hpump->pump_port == nullptr) {
+    return;
+  }
+  HAL_GPIO_WritePin(hpump->pump_port, hpump->pump_pin, GPIO_PIN_RESET);
+}
+
+static void Pump_Catch(Pump_t *hpump, uint8_t enable) {
+  if (!enable) {
+    return;
+  }
+  Pump_ValveOff(hpump);
+  Pump_RelayOn(hpump);
+}
+
+static void Pump_Release(Pump_t *hpump, uint8_t enable) {
+  if (!enable) {
+    return;
+  }
+  Pump_ValveOn(hpump);
+  Pump_RelayOff(hpump);
+}
 
 #define ARM_RESET_ANGLE 0.0f
 #define ARM_CATCH_PUSH_ANGLE 250.0f
@@ -72,7 +148,7 @@ static volatile float g_auto_retreat_length_m = 0.15f;
 __attribute__((weak)) void Arm_AutoVehicleMove(float retreat_length_m,
                                                bool enable) {
   (void)retreat_length_m;
-  InterboardComm_SendRetreatCommand(enable);
+  (void)enable;
 }
 
 osTimerId_t arm_timHandle = nullptr;
@@ -100,6 +176,7 @@ Motor_VelCtrl_t *vel_rotate_motor = nullptr;
 Motor_VelCtrl_t *vel_raiseandlower_motor = nullptr;
 Motor_VelCtrl_t *vel_catch_motor = nullptr;
 
+// 电机控制中断节拍：更新所有位置/速度控制器。
 void Arm_TIM_Callback(void) {
   pos_raiseandlower_motor->update();
   pos_catch_motor->update();
@@ -109,6 +186,7 @@ void Arm_TIM_Callback(void) {
   vel_catch_motor->update();
 }
 
+// 将外部速度指令转换为控制器使能/失能动作。
 static void Arm_Contrl_Task(void *argument) {
   (void)argument;
   for (;;) {
@@ -131,6 +209,7 @@ static void Arm_Contrl_Task(void *argument) {
   }
 }
 
+// 将后退长度转换为时间，并进行上下限约束。
 static uint32_t AutoRetreatDurationMs(float retreat_length_m) {
   if (retreat_length_m < 0.0f) {
     retreat_length_m = -retreat_length_m;
@@ -145,21 +224,25 @@ static uint32_t AutoRetreatDurationMs(float retreat_length_m) {
   return (uint32_t)ms;
 }
 
+// 判断自动抓取当前步骤是否超时。
 static bool AutoStepTimeout(uint32_t wait_ms, uint32_t now_ms) {
   return (uint32_t)(now_ms - g_auto_catch_state_start_ms) >= wait_ms;
 }
 
+// 旋转与吸泵并行步骤取较长等待时间。
 static uint32_t AutoRotateAndPumpWaitMs() {
   return (ARM_AUTO_WAIT_ROTATE_MS > ARM_AUTO_WAIT_PUMP_ON_MS)
              ? ARM_AUTO_WAIT_ROTATE_MS
              : ARM_AUTO_WAIT_PUMP_ON_MS;
 }
 
+// 切换自动抓取状态并记录进入时间。
 static void AutoCatchEnterState(AutoCatchState state, uint32_t now_ms) {
   g_auto_catch_state = state;
   g_auto_catch_state_start_ms = now_ms;
 }
 
+// 启动自动抓取状态机并清零手动速度指令。
 bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     return false;
@@ -191,8 +274,10 @@ bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   return true;
 }
 
+// 返回自动抓取流程是否在运行。
 bool Arm_AutoCatchBusy() { return g_auto_catch_state != AUTO_CATCH_IDLE; }
 
+// 中止自动抓取但保持吸泵当前状态；停止所有电机。
 void Arm_AutoCatchAbortKeepPump() {
   if (g_auto_catch_state == AUTO_CATCH_IDLE) {
     return;
@@ -228,6 +313,7 @@ void Arm_AutoCatchAbortKeepPump() {
   g_auto_catch_state = AUTO_CATCH_IDLE;
 }
 
+// 设置自动后退长度并做最小值限制。
 void Arm_SetAutoRetreatLength(float length_m) {
   if (length_m < 0.05f) {
     length_m = 0.05f;
@@ -235,6 +321,7 @@ void Arm_SetAutoRetreatLength(float length_m) {
   g_auto_retreat_length_m = length_m;
 }
 
+// 主控制循环：自动抓取状态机与手动按键处理。
 static void Arm_softTIM(void *argument) {
   (void)argument;
 
@@ -369,6 +456,7 @@ static void Arm_softTIM(void *argument) {
   }
 }
 
+// 初始化吸泵、控制器与 RTOS 钩子。
 void Arm_Init(void) {
   (void)ARM_CATCH_PUSH_ANGLE;
   (void)ARM_CATCH_PUSH_ANGLE_MAX;
@@ -448,8 +536,11 @@ void Arm_Init(void) {
   osTimerStart(arm_timHandle, 10);
 }
 
+// 应用层钩子：初始化机械臂子系统。
 void APP_Arm_BeforeUpdate() { Arm_Init(); }
 
+// 应用层钩子：1 kHz 控制器更新节拍。
 void APP_Arm_Update_1kHz() { Arm_TIM_Callback(); }
 
+// 预留的 100 Hz 钩子。
 void APP_Arm_Update_100Hz() {}

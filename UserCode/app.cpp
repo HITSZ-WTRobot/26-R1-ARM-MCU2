@@ -1,11 +1,9 @@
 #include "can.h"
 #include "arm.hpp"
-#include "clamp.hpp"
 #include "cmsis_os2.h"
 #include "controller_receive.hpp"
 #include "device.hpp"
 #include "eventflags.hpp"
-#include "interboard_comm.hpp"
 #include "tim.h"
 
 static osTimerId_t controller_timHandle = nullptr;
@@ -20,7 +18,6 @@ void TIM_Callback_1kHz_1(TIM_HandleTypeDef* htim)
 {
     (void)htim;
 
-    Clamp_TIM_Callback();
     Arm_TIM_Callback();
     APP_Device_Update();
 }
@@ -31,8 +28,6 @@ extern "C" void Init(void* argument)
 
     flags_create();
     APP_Device_Init();
-    InterboardComm_Init();
-    Clamp_Init();
     Arm_Init();
     Controller_receiver_Init();
 
@@ -42,6 +37,5 @@ extern "C" void Init(void* argument)
     controller_timHandle = osTimerNew(Controller_softTIM, osTimerPeriodic, NULL, NULL);
     osTimerStart(controller_timHandle, 1);
 
-    Clamp_Control_Init();
     osThreadExit();
 }
