@@ -153,7 +153,7 @@ static volatile float g_auto_retreat_length_m = 0.15f;
 
 
 osTimerId_t arm_timHandle = nullptr;
-float arm_pos_height = ARM_CATCH_HEIGHT_LOW;
+//float arm_pos_height = ARM_RESET_ANGLE;//ARM_CATCH_HEIGHT_LOW;
 
 float arm_vel_out = 0;
 float arm_vel_out_last = 0;
@@ -161,6 +161,10 @@ float arm_vel_rotate = 0;
 float arm_vel_rotate_last = 0;
 float arm_vel_height = 0;
 float arm_vel_height_last = 0;
+float arm_pos_out=0;
+float arm_pos_rotate=0;
+float arm_pos_height=0;
+
 
 osThreadId_t ArmHandle = nullptr;
 const osThreadAttr_t arm_attributes = {
@@ -316,8 +320,15 @@ static void Arm_softTIM(void *argument) {
   static uint8_t rotate_state = 0;
 
   const uint32_t now_ms = HAL_GetTick();
-
-  Pump_Catch(&pump, 1);
+  vel_raiseandlower_motor->disable();
+  pos_raiseandlower_motor->enable();
+  pos_raiseandlower_motor->setRef(arm_pos_height);
+  pos_catch_motor->enable();
+  vel_catch_motor->disable();
+  pos_catch_motor->setRef(arm_pos_out);
+  vel_rotate_motor->disable();
+  pos_rotate_motor->enable();
+  pos_rotate_motor->setRef(arm_pos_rotate);
 
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
@@ -346,9 +357,15 @@ static void Arm_softTIM(void *argument) {
       pos_catch_motor->setRef(ARM_CATCH_PUSH_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_PUSH_MS, now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_ROTATE_BACK, now_ms);
+        AutoCatchEnterState(AUTO_CATCH_ROTATE_BACK, now_ms);
       }
       break;
 
+    case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体,要先旋转再放下，防止卡住台阶
+      vel_rotate_motor->disable();
+      pos_rotate_motor->enable();
+      pos_rotate_motor->setRef(ARM_RESET_ANGLE);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_MS, now_ms)) {
     case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体,要先旋转再放下，防止卡住台阶
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
@@ -359,6 +376,7 @@ static void Arm_softTIM(void *argument) {
       break;
 
     case AUTO_CATCH_GO_RELEASE_HEIGHT: // 旋转回初始位置后去释放高度准备放下物体
+    case AUTO_CATCH_GO_RELEASE_HEIGHT: // 旋转回初始位置后去释放高度准备放下物体
       vel_raiseandlower_motor->disable();
       pos_raiseandlower_motor->enable();
       pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
@@ -367,6 +385,9 @@ static void Arm_softTIM(void *argument) {
       }
       break;
 
+
+
+    case AUTO_CATCH_RELEASE: // 到达释放高度后打开吸泵放下物体，并保持一段时间后结束流程
 
 
     case AUTO_CATCH_RELEASE: // 到达释放高度后打开吸泵放下物体，并保持一段时间后结束流程
@@ -453,7 +474,7 @@ void Arm_Init(void) {
   controllers::MotorVelController::Config arm_rotate_vel_cfg{};
   arm_rotate_vel_cfg.pid.Kp = 100.0f;
   arm_rotate_vel_cfg.pid.Ki = 0.8f;
-  arm_rotate_vel_cfg.pid.Kd = 20.0f;
+  arm_rotate_vel_cfg.pid.Kd = 1.0f;
   arm_rotate_vel_cfg.pid.abs_output_max = 8000.0f;
 
   controllers::MotorVelController::Config arm_raiseandlower_vel_cfg{};
@@ -463,37 +484,38 @@ void Arm_Init(void) {
   arm_raiseandlower_vel_cfg.pid.abs_output_max = 8000.0f;
 
   controllers::MotorPosController::Config arm_catch_pos_cfg{};
-  arm_catch_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_catch_pos_cfg.velocity_pid.Ki = 0.5f;
-  arm_catch_pos_cfg.velocity_pid.Kd = 0.9f;
-  arm_catch_pos_cfg.velocity_pid.abs_output_max = 5000.0f;
-  arm_catch_pos_cfg.position_pid.Kp = 1.0f;
-  arm_catch_pos_cfg.position_pid.Ki = 0.002f;
-  arm_catch_pos_cfg.position_pid.Kd = 0.8f;
-  arm_catch_pos_cfg.position_pid.abs_output_max = 500.0f;
-  arm_catch_pos_cfg.pos_vel_freq_ratio = 1;
+  arm_catch_pos_cfg.velocity_pid.Kp = 500.0f;
+  arm_catch_pos_cfg.velocity_pid.Ki = 0.1f;
+  arm_catch_pos_cfg.velocity_pid.Kd = 0.0f;
+  arm_catch_pos_cfg.velocity_pid.abs_output_max = 4500.0f;
+  arm_catch_pos_cfg.position_pid.Kp = 2.0f;
+  arm_catch_pos_cfg.position_pid.Ki = 0.0f;
+  arm_catch_pos_cfg.position_pid.Kd = 0.2f;
+  arm_catch_pos_cfg.position_pid.abs_output_max = 200.0f;
+  arm_catch_pos_cfg.pos_vel_freq_ratio = 10;
 
   controllers::MotorPosController::Config arm_rotate_pos_cfg{};
-  arm_rotate_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_rotate_pos_cfg.velocity_pid.Ki = 0.5f;
-  arm_rotate_pos_cfg.velocity_pid.Kd = 0.9f;
-  arm_rotate_pos_cfg.velocity_pid.abs_output_max = 8000.0f;
-  arm_rotate_pos_cfg.position_pid.Kp = 24.5f;
-  arm_rotate_pos_cfg.position_pid.Ki = 0.42f;
-  arm_rotate_pos_cfg.position_pid.Kd = 100.0f;
-  arm_rotate_pos_cfg.position_pid.abs_output_max = 500.0f;
-  arm_rotate_pos_cfg.pos_vel_freq_ratio = 10;
+  arm_rotate_pos_cfg.velocity_pid.Kp = 500.0f;
+  arm_rotate_pos_cfg.velocity_pid.Ki = 5.0f;
+  arm_rotate_pos_cfg.velocity_pid.Kd = 0.5f;
+  arm_rotate_pos_cfg.velocity_pid.abs_output_max = 16000.0f;
+  arm_rotate_pos_cfg.position_pid.Kp = 1.6f;
+  arm_rotate_pos_cfg.position_pid.Ki = 0.00f;
+  arm_rotate_pos_cfg.position_pid.Kd = 0.6f;
+  arm_rotate_pos_cfg.position_pid.abs_output_max = 100.0f;
+  arm_rotate_pos_cfg.pos_vel_freq_ratio = 1;
 
   controllers::MotorPosController::Config arm_raiseandlower_pos_cfg{};
-  arm_raiseandlower_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_raiseandlower_pos_cfg.velocity_pid.Ki = 0.001f;
+  arm_raiseandlower_pos_cfg.velocity_pid.Kp = 500.0f;
+  arm_raiseandlower_pos_cfg.velocity_pid.Ki = 5.0f;
   arm_raiseandlower_pos_cfg.velocity_pid.Kd = 0.5f;
-  arm_raiseandlower_pos_cfg.velocity_pid.abs_output_max = 8000.0f;
-  arm_raiseandlower_pos_cfg.position_pid.Kp = 2.0f;
-  arm_raiseandlower_pos_cfg.position_pid.Ki = 0.01f;
-  arm_raiseandlower_pos_cfg.position_pid.Kd = 0.20f;
-  arm_raiseandlower_pos_cfg.position_pid.abs_output_max = 2000.0f;
+  arm_raiseandlower_pos_cfg.velocity_pid.abs_output_max = 16000.0f;
+  arm_raiseandlower_pos_cfg.position_pid.Kp = 1.6f;
+  arm_raiseandlower_pos_cfg.position_pid.Ki = 0.0f;
+  arm_raiseandlower_pos_cfg.position_pid.Kd = 0.6f;
+  arm_raiseandlower_pos_cfg.position_pid.abs_output_max = 100.0f;
   arm_raiseandlower_pos_cfg.pos_vel_freq_ratio = 1;
+
 
   vel_catch_motor = new Motor_VelCtrl_t(catch_motor, arm_catch_vel_cfg);
   pos_catch_motor = new Motor_PosCtrl_t(catch_motor, arm_catch_pos_cfg);
@@ -509,6 +531,7 @@ void Arm_Init(void) {
   pos_raiseandlower_motor->disable();
   vel_raiseandlower_motor->disable();
   vel_rotate_motor->disable();
+
   pos_rotate_motor->disable();
 
   ArmHandle = osThreadNew(Arm_Contrl_Task, NULL, &arm_attributes);

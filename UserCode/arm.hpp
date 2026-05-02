@@ -19,6 +19,11 @@ extern float arm_vel_height;
 extern float arm_vel_out_last;
 extern float arm_vel_rotate_last;
 extern float arm_vel_height_last;
+extern float arm_pos_out;
+extern float arm_pos_rotate;
+extern float arm_pos_height;
+
+
 
 bool Arm_AutoCatchStart(ArmAutoCatchLevel level);
 bool Arm_AutoCatchBusy();
