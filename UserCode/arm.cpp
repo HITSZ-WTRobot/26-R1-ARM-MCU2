@@ -6,6 +6,8 @@
 #include "gpio.h"
 #include "motor_pos_controller.hpp"
 #include "motor_vel_controller.hpp"
+#include "stm32f407xx.h"
+#include "stm32f4xx_hal_gpio.h"
 #include "tim.h"
 
 #include <cstdint>
@@ -30,19 +32,6 @@ typedef struct {
   uint8_t invert;
 } Pump_t;
 
-static void Pump_Init(Pump_t *hpump, const Pump_Config_t *config) {
-  if (hpump == nullptr || config == nullptr) {
-    return;
-  }
-
-  hpump->htim = config->htim;
-  hpump->channel = config->channel;
-  hpump->valve_port = config->valve_port;
-  hpump->pump_port = config->pump_port;
-  hpump->pump_pin = config->pump_pin;
-  hpump->valve_pin = config->valve_pin;
-  hpump->invert = config->invert;
-}
 
 static void Pump_ValveOn(Pump_t *hpump) {
   if (hpump == nullptr || hpump->valve_port == nullptr) {
@@ -109,13 +98,30 @@ static void Pump_Release(Pump_t *hpump, uint8_t enable) {
 #define ARM_AUTO_RETREAT_MIN_TIME_MS 300U
 #define ARM_AUTO_RETREAT_MAX_TIME_MS 2500U
 
-#define PUMP_VALVE_GPIO_Port GPIOE
-#define PUMP_VALVE_Pin GPIO_PIN_3
-#define PUMP_RELAY_GPIO_Port GPIOE
-#define PUMP_RELAY_Pin GPIO_PIN_4
+#define PUMP_VALVE_GPIO_Port GPIOC
+#define PUMP_VALVE_Pin GPIO_PIN_0
+#define PUMP_RELAY_GPIO_Port GPIOC
+#define PUMP_RELAY_Pin GPIO_PIN_1
 
 using Motor_PosCtrl_t = controllers::MotorPosController;
 using Motor_VelCtrl_t = controllers::MotorVelController;
+
+static void Pump_Init(Pump_t *hpump, const Pump_Config_t *config) {
+  if (hpump == nullptr || config == nullptr) {
+    return;
+  }
+
+  hpump->htim = config->htim;
+  hpump->channel = config->channel;
+  hpump->valve_port = config->valve_port;
+  hpump->pump_port = config->pump_port;
+  hpump->pump_pin = config->pump_pin;
+  hpump->valve_pin = config->valve_pin;
+  hpump->invert = config->invert;
+
+  HAL_GPIO_WritePin(hpump->valve_port, hpump->valve_pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(hpump->pump_port, hpump->pump_pin, GPIO_PIN_RESET);
+}
 
 Pump_Config_t pump_config = {
     .htim = &htim3,
@@ -330,6 +336,8 @@ static void Arm_softTIM(void *argument) {
   static uint8_t rotate_state = 0;
 
   const uint32_t now_ms = HAL_GetTick();
+
+  Pump_Catch(&pump, 1);
 
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
