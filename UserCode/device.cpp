@@ -71,7 +71,7 @@ constexpr motors::DJIMotor::Config motor_clamp_catch_config = {
 
 constexpr motors::DJIMotor::Config rotate_motor_config = {
     .hcan      = &hcan1,
-    .type      = motors::DJIMotor::Type::M2006_C610,
+    .type      = motors::DJIMotor::Type::M3508_C620,
     .id1       = 1,
     .auto_zero = false,
     .reverse   = false,

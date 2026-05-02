@@ -6,6 +6,7 @@
 #include "gpio.h"
 #include "motor_pos_controller.hpp"
 #include "motor_vel_controller.hpp"
+#include "stm32f4xx_hal_gpio.h"
 #include "tim.h"
 
 #include <cstdint>
@@ -29,20 +30,6 @@ typedef struct {
   uint16_t pump_pin;
   uint8_t invert;
 } Pump_t;
-
-static void Pump_Init(Pump_t *hpump, const Pump_Config_t *config) {
-  if (hpump == nullptr || config == nullptr) {
-    return;
-  }
-
-  hpump->htim = config->htim;
-  hpump->channel = config->channel;
-  hpump->valve_port = config->valve_port;
-  hpump->pump_port = config->pump_port;
-  hpump->pump_pin = config->pump_pin;
-  hpump->valve_pin = config->valve_pin;
-  hpump->invert = config->invert;
-}
 
 static void Pump_ValveOn(Pump_t *hpump) {
   if (hpump == nullptr || hpump->valve_port == nullptr) {
@@ -117,6 +104,22 @@ static void Pump_Release(Pump_t *hpump, uint8_t enable) {
 using Motor_PosCtrl_t = controllers::MotorPosController;
 using Motor_VelCtrl_t = controllers::MotorVelController;
 
+
+static void Pump_Init(Pump_t *hpump, const Pump_Config_t *config) {
+  if (hpump == nullptr || config == nullptr) {
+    return;
+  }
+  hpump->htim = config->htim;
+  hpump->channel = config->channel;
+  hpump->valve_port = config->valve_port;
+  hpump->pump_port = config->pump_port;
+  hpump->pump_pin = config->pump_pin;
+  hpump->valve_pin = config->valve_pin;
+  hpump->invert = config->invert;
+  HAL_GPIO_WritePin(GPIOE, PUMP_VALVE_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, PUMP_RELAY_Pin, GPIO_PIN_RESET);
+}
+
 Pump_Config_t pump_config = {
     .htim = &htim3,
     .channel = TIM_CHANNEL_3,
@@ -152,7 +155,7 @@ __attribute__((weak)) void Arm_AutoVehicleMove(float retreat_length_m,
 }
 
 osTimerId_t arm_timHandle = nullptr;
-float arm_pos_height = ARM_CATCH_HEIGHT_LOW;
+//float arm_pos_height = ARM_RESET_ANGLE;//ARM_CATCH_HEIGHT_LOW;
 
 float arm_vel_out = 0;
 float arm_vel_out_last = 0;
@@ -160,6 +163,10 @@ float arm_vel_rotate = 0;
 float arm_vel_rotate_last = 0;
 float arm_vel_height = 0;
 float arm_vel_height_last = 0;
+float arm_pos_out=0;
+float arm_pos_rotate=0;
+float arm_pos_height=0;
+
 
 osThreadId_t ArmHandle = nullptr;
 const osThreadAttr_t arm_attributes = {
@@ -330,6 +337,15 @@ static void Arm_softTIM(void *argument) {
   static uint8_t rotate_state = 0;
 
   const uint32_t now_ms = HAL_GetTick();
+  vel_raiseandlower_motor->disable();
+  pos_raiseandlower_motor->enable();
+  pos_raiseandlower_motor->setRef(arm_pos_height);
+  pos_catch_motor->enable();
+  vel_catch_motor->disable();
+  pos_catch_motor->setRef(arm_pos_out);
+  vel_rotate_motor->disable();
+  pos_rotate_motor->enable();
+  pos_rotate_motor->setRef(arm_pos_rotate);
 
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
@@ -473,7 +489,7 @@ void Arm_Init(void) {
   controllers::MotorVelController::Config arm_rotate_vel_cfg{};
   arm_rotate_vel_cfg.pid.Kp = 100.0f;
   arm_rotate_vel_cfg.pid.Ki = 0.8f;
-  arm_rotate_vel_cfg.pid.Kd = 20.0f;
+  arm_rotate_vel_cfg.pid.Kd = 1.0f;
   arm_rotate_vel_cfg.pid.abs_output_max = 8000.0f;
 
   controllers::MotorVelController::Config arm_raiseandlower_vel_cfg{};
@@ -483,26 +499,26 @@ void Arm_Init(void) {
   arm_raiseandlower_vel_cfg.pid.abs_output_max = 8000.0f;
 
   controllers::MotorPosController::Config arm_catch_pos_cfg{};
-  arm_catch_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_catch_pos_cfg.velocity_pid.Ki = 0.5f;
-  arm_catch_pos_cfg.velocity_pid.Kd = 0.9f;
-  arm_catch_pos_cfg.velocity_pid.abs_output_max = 5000.0f;
-  arm_catch_pos_cfg.position_pid.Kp = 1.0f;
-  arm_catch_pos_cfg.position_pid.Ki = 0.002f;
-  arm_catch_pos_cfg.position_pid.Kd = 0.8f;
+  arm_catch_pos_cfg.velocity_pid.Kp = 500.0f;
+  arm_catch_pos_cfg.velocity_pid.Ki = 0.1f;
+  arm_catch_pos_cfg.velocity_pid.Kd = 0.0f;
+  arm_catch_pos_cfg.velocity_pid.abs_output_max = 4500.0f;
+  arm_catch_pos_cfg.position_pid.Kp = 2.0f;
+  arm_catch_pos_cfg.position_pid.Ki = 0.0f;
+  arm_catch_pos_cfg.position_pid.Kd = 0.2f;
   arm_catch_pos_cfg.position_pid.abs_output_max = 500.0f;
-  arm_catch_pos_cfg.pos_vel_freq_ratio = 1;
+  arm_catch_pos_cfg.pos_vel_freq_ratio = 10;
 
   controllers::MotorPosController::Config arm_rotate_pos_cfg{};
   arm_rotate_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_rotate_pos_cfg.velocity_pid.Ki = 0.5f;
-  arm_rotate_pos_cfg.velocity_pid.Kd = 0.9f;
+  arm_rotate_pos_cfg.velocity_pid.Ki = 0.001f;
+  arm_rotate_pos_cfg.velocity_pid.Kd = 0.5f;
   arm_rotate_pos_cfg.velocity_pid.abs_output_max = 8000.0f;
-  arm_rotate_pos_cfg.position_pid.Kp = 24.5f;
-  arm_rotate_pos_cfg.position_pid.Ki = 0.42f;
-  arm_rotate_pos_cfg.position_pid.Kd = 100.0f;
-  arm_rotate_pos_cfg.position_pid.abs_output_max = 500.0f;
-  arm_rotate_pos_cfg.pos_vel_freq_ratio = 10;
+  arm_rotate_pos_cfg.position_pid.Kp = 2.0f;
+  arm_rotate_pos_cfg.position_pid.Ki = 0.01f;
+  arm_rotate_pos_cfg.position_pid.Kd = 0.20f;
+  arm_rotate_pos_cfg.position_pid.abs_output_max = 2000.0f;
+  arm_rotate_pos_cfg.pos_vel_freq_ratio = 1;
 
   controllers::MotorPosController::Config arm_raiseandlower_pos_cfg{};
   arm_raiseandlower_pos_cfg.velocity_pid.Kp = 100.0f;

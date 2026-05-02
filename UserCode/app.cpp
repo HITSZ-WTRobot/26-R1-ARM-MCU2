@@ -25,7 +25,6 @@ void TIM_Callback_1kHz_1(TIM_HandleTypeDef* htim)
 extern "C" void Init(void* argument)
 {
     (void)argument;
-
     flags_create();
     APP_Device_Init();
     Arm_Init();
