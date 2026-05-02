@@ -151,11 +151,6 @@ static volatile uint32_t g_auto_catch_state_start_ms = 0;
 static volatile float g_auto_catch_target_height = ARM_CATCH_HEIGHT_LOW;
 static volatile float g_auto_retreat_length_m = 0.15f;
 
-__attribute__((weak)) void Arm_AutoVehicleMove(float retreat_length_m,
-                                               bool enable) {
-  (void)retreat_length_m;
-  (void)enable;
-}
 
 osTimerId_t arm_timHandle = nullptr;
 float arm_pos_height = ARM_CATCH_HEIGHT_LOW;
@@ -215,20 +210,7 @@ static void Arm_Contrl_Task(void *argument) {
   }
 }
 
-// 将后退长度转换为时间，并进行上下限约束。
-static uint32_t AutoRetreatDurationMs(float retreat_length_m) {
-  if (retreat_length_m < 0.0f) {
-    retreat_length_m = -retreat_length_m;
-  }
-  float ms = retreat_length_m / ARM_AUTO_RETREAT_SPEED_MPS * 1000.0f;
-  if (ms < (float)ARM_AUTO_RETREAT_MIN_TIME_MS) {
-    ms = (float)ARM_AUTO_RETREAT_MIN_TIME_MS;
-  }
-  if (ms > (float)ARM_AUTO_RETREAT_MAX_TIME_MS) {
-    ms = (float)ARM_AUTO_RETREAT_MAX_TIME_MS;
-  }
-  return (uint32_t)ms;
-}
+
 
 // 判断自动抓取当前步骤是否超时。
 static bool AutoStepTimeout(uint32_t wait_ms, uint32_t now_ms) {
@@ -274,7 +256,6 @@ bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   arm_vel_out_last = 0;
   arm_vel_rotate_last = 0;
   arm_vel_height_last = 0;
-  Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
 
   AutoCatchEnterState(AUTO_CATCH_GO_HEIGHT, HAL_GetTick());
   return true;
@@ -289,7 +270,6 @@ void Arm_AutoCatchAbortKeepPump() {
     return;
   }
 
-  Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
 
   if (pos_catch_motor) {
     pos_catch_motor->disable();
@@ -365,44 +345,36 @@ static void Arm_softTIM(void *argument) {
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_CATCH_PUSH_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_PUSH_MS, now_ms)) {
-        Arm_AutoVehicleMove(g_auto_retreat_length_m, true);
-        AutoCatchEnterState(AUTO_CATCH_VEHICLE_RETREAT, now_ms);
-      }
-      break;
-
-    case AUTO_CATCH_VEHICLE_RETREAT: // 推出后退一段距离，避免物体被抓起后贴着墙壁等障碍物
-      Arm_AutoVehicleMove(g_auto_retreat_length_m, true);
-      if (AutoStepTimeout(AutoRetreatDurationMs(g_auto_retreat_length_m), now_ms)) {
-        Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
-        AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
-      }
-      break;
-
-    case AUTO_CATCH_GO_RELEASE_HEIGHT: // 退完后去释放高度准备放下物体
-      vel_raiseandlower_motor->disable();
-      pos_raiseandlower_motor->enable();
-      pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
-      if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_HEIGHT_MS, now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_ROTATE_BACK, now_ms);
       }
       break;
 
-    case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体
+    case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体,要先旋转再放下，防止卡住台阶
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_RESET_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_GO_RELEASE_HEIGHT: // 旋转回初始位置后去释放高度准备放下物体
+      vel_raiseandlower_motor->disable();
+      pos_raiseandlower_motor->enable();
+      pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_HEIGHT_MS, now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_RELEASE, now_ms);
       }
       break;
 
-    case AUTO_CATCH_RELEASE: // 旋转回初始位置后关闭吸泵放下物体
+
+
+    case AUTO_CATCH_RELEASE: // 到达释放高度后打开吸泵放下物体，并保持一段时间后结束流程
       vel_catch_motor->disable();
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_AUTO_RETRACT_PUSH_ANGLE);
       Pump_Release(&pump, 1);
       if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_MS, now_ms)) {
-        Arm_AutoVehicleMove(g_auto_retreat_length_m, false);
         arm_vel_out = 0;
         arm_vel_rotate = 0;
         arm_vel_height = 0;
