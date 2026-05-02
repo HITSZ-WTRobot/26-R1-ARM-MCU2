@@ -1,6 +1,7 @@
 #include "device.hpp"
 
 #include "can.h"
+#include "can_driver.hpp"
 #include "cmsis_os2.h"
 #include "dji.hpp"
 
@@ -23,9 +24,9 @@ void can_init()
     motors::DJIMotor::CAN_FilterInit(&hcan2, 14);
     CAN_RegisterCallback(&hcan2, motors::DJIMotor::CANBaseReceiveCallback);
 
-    HAL_CAN_RegisterCallback(&hcan1, HAL_CAN_RX_FIFO0_MSG_PENDING_CB_ID, CAN_Fifo0ReceiveCallback);
+    CAN_InitMainCallback(&hcan1);
     CAN_Start(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
-    HAL_CAN_RegisterCallback(&hcan2, HAL_CAN_RX_FIFO0_MSG_PENDING_CB_ID, CAN_Fifo0ReceiveCallback);
+    CAN_InitMainCallback(&hcan2);
     CAN_Start(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING);
 }
 

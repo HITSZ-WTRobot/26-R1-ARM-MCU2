@@ -506,30 +506,31 @@ void Arm_Init(void) {
   arm_catch_pos_cfg.position_pid.Kp = 2.0f;
   arm_catch_pos_cfg.position_pid.Ki = 0.0f;
   arm_catch_pos_cfg.position_pid.Kd = 0.2f;
-  arm_catch_pos_cfg.position_pid.abs_output_max = 500.0f;
+  arm_catch_pos_cfg.position_pid.abs_output_max = 200.0f;
   arm_catch_pos_cfg.pos_vel_freq_ratio = 10;
 
   controllers::MotorPosController::Config arm_rotate_pos_cfg{};
-  arm_rotate_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_rotate_pos_cfg.velocity_pid.Ki = 0.001f;
+  arm_rotate_pos_cfg.velocity_pid.Kp = 500.0f;
+  arm_rotate_pos_cfg.velocity_pid.Ki = 5.0f;
   arm_rotate_pos_cfg.velocity_pid.Kd = 0.5f;
-  arm_rotate_pos_cfg.velocity_pid.abs_output_max = 8000.0f;
-  arm_rotate_pos_cfg.position_pid.Kp = 2.0f;
-  arm_rotate_pos_cfg.position_pid.Ki = 0.01f;
-  arm_rotate_pos_cfg.position_pid.Kd = 0.20f;
-  arm_rotate_pos_cfg.position_pid.abs_output_max = 2000.0f;
+  arm_rotate_pos_cfg.velocity_pid.abs_output_max = 16000.0f;
+  arm_rotate_pos_cfg.position_pid.Kp = 1.6f;
+  arm_rotate_pos_cfg.position_pid.Ki = 0.00f;
+  arm_rotate_pos_cfg.position_pid.Kd = 0.6f;
+  arm_rotate_pos_cfg.position_pid.abs_output_max = 100.0f;
   arm_rotate_pos_cfg.pos_vel_freq_ratio = 1;
 
   controllers::MotorPosController::Config arm_raiseandlower_pos_cfg{};
-  arm_raiseandlower_pos_cfg.velocity_pid.Kp = 100.0f;
-  arm_raiseandlower_pos_cfg.velocity_pid.Ki = 0.001f;
+  arm_raiseandlower_pos_cfg.velocity_pid.Kp = 500.0f;
+  arm_raiseandlower_pos_cfg.velocity_pid.Ki = 5.0f;
   arm_raiseandlower_pos_cfg.velocity_pid.Kd = 0.5f;
-  arm_raiseandlower_pos_cfg.velocity_pid.abs_output_max = 8000.0f;
-  arm_raiseandlower_pos_cfg.position_pid.Kp = 2.0f;
-  arm_raiseandlower_pos_cfg.position_pid.Ki = 0.01f;
-  arm_raiseandlower_pos_cfg.position_pid.Kd = 0.20f;
-  arm_raiseandlower_pos_cfg.position_pid.abs_output_max = 2000.0f;
+  arm_raiseandlower_pos_cfg.velocity_pid.abs_output_max = 16000.0f;
+  arm_raiseandlower_pos_cfg.position_pid.Kp = 1.6f;
+  arm_raiseandlower_pos_cfg.position_pid.Ki = 0.0f;
+  arm_raiseandlower_pos_cfg.position_pid.Kd = 0.6f;
+  arm_raiseandlower_pos_cfg.position_pid.abs_output_max = 100.0f;
   arm_raiseandlower_pos_cfg.pos_vel_freq_ratio = 1;
+
 
   vel_catch_motor = new Motor_VelCtrl_t(catch_motor, arm_catch_vel_cfg);
   pos_catch_motor = new Motor_PosCtrl_t(catch_motor, arm_catch_pos_cfg);
@@ -545,6 +546,7 @@ void Arm_Init(void) {
   pos_raiseandlower_motor->disable();
   vel_raiseandlower_motor->disable();
   vel_rotate_motor->disable();
+
   pos_rotate_motor->disable();
 
   ArmHandle = osThreadNew(Arm_Contrl_Task, NULL, &arm_attributes);
