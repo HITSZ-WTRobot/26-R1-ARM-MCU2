@@ -366,16 +366,10 @@ static void Arm_softTIM(void *argument) {
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_RESET_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_MS, now_ms)) {
-    case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体,要先旋转再放下，防止卡住台阶
-      vel_rotate_motor->disable();
-      pos_rotate_motor->enable();
-      pos_rotate_motor->setRef(ARM_RESET_ANGLE);
-      if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_MS, now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
       }
       break;
 
-    case AUTO_CATCH_GO_RELEASE_HEIGHT: // 旋转回初始位置后去释放高度准备放下物体
     case AUTO_CATCH_GO_RELEASE_HEIGHT: // 旋转回初始位置后去释放高度准备放下物体
       vel_raiseandlower_motor->disable();
       pos_raiseandlower_motor->enable();
@@ -386,11 +380,8 @@ static void Arm_softTIM(void *argument) {
       break;
 
 
-
     case AUTO_CATCH_RELEASE: // 到达释放高度后打开吸泵放下物体，并保持一段时间后结束流程
 
-
-    case AUTO_CATCH_RELEASE: // 到达释放高度后打开吸泵放下物体，并保持一段时间后结束流程
       vel_catch_motor->disable();
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_AUTO_RETRACT_PUSH_ANGLE);
