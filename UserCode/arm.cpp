@@ -84,14 +84,15 @@ static void Pump_Release(Pump_t *hpump, uint8_t enable) {
 #define ARM_CATCH_HEIGHT_MID -707.0f
 #define ARM_CATCH_HEIGHT_HIGH 0.0f
 #define ARM_RELEASE_HEIGHT -229.0f
-#define ARM_ROTATE_ANGLE -305.0f //这个是从收回转到取物是-305，放下转回是0
+#define ARM_ROTATE_ANGLE -360.0f //这个是从收回转到取物是-360，放下转回是0
 
 #define ARM_AUTO_WAIT_HEIGHT_MS 600U
 #define ARM_AUTO_WAIT_ROTATE_MS 300U
 #define ARM_AUTO_WAIT_PUMP_ON_MS 100U
-#define ARM_AUTO_WAIT_PUSH_MS 500U
+#define ARM_AUTO_WAIT_PUSH_MS 300U
 #define ARM_AUTO_WAIT_RELEASE_HEIGHT_MS 600U
 #define ARM_AUTO_WAIT_ROTATE_BACK_MS 900U
+#define ARM_AUTO_WAIT_ROTATE_BACK_AND_RELEASE_HEIGHT 1500U
 #define ARM_AUTO_WAIT_RELEASE_MS 250U
 #define ARM_AUTO_RETRACT_PUSH_ANGLE 0.0f
 #define ARM_AUTO_RETREAT_SPEED_MPS 0.25f
@@ -137,19 +138,18 @@ static Pump_t pump;
 
 enum AutoCatchState {
   AUTO_CATCH_IDLE = 0,
-  AUTO_CATCH_GO_HEIGHT,
-  AUTO_CATCH_ROTATE_AND_PUMP,
+  AUTO_CATCH_ROTATE,
+  AUTO_CATCH_HEIGHT_AND_PUMP,
   AUTO_CATCH_PUSH_OUT,
-  AUTO_CATCH_VEHICLE_RETREAT,
-  AUTO_CATCH_GO_RELEASE_HEIGHT,
-  AUTO_CATCH_ROTATE_BACK,
+  AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE,
+  AUTO_CATCH_ROTATE_AND_GO_RELEASE_HEIGHT,
   AUTO_CATCH_RELEASE,
 };
 
 static volatile AutoCatchState g_auto_catch_state = AUTO_CATCH_IDLE;
 static volatile uint32_t g_auto_catch_state_start_ms = 0;
-static volatile float g_auto_catch_target_height = ARM_CATCH_HEIGHT_LOW;
-static volatile float g_auto_retreat_length_m = 0.15f;
+static volatile ArmAutoCatchLevel g_auto_catch_target_height = ARM_AUTO_CATCH_LOW;
+
 
 
 osTimerId_t arm_timHandle = nullptr;
@@ -242,13 +242,13 @@ bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
 
   switch (level) {
   case ARM_AUTO_CATCH_LOW:
-    g_auto_catch_target_height = ARM_CATCH_HEIGHT_LOW;
+    g_auto_catch_target_height = ARM_AUTO_CATCH_LOW;
     break;
   case ARM_AUTO_CATCH_MID:
-    g_auto_catch_target_height = ARM_CATCH_HEIGHT_MID;
+    g_auto_catch_target_height = ARM_AUTO_CATCH_MID;
     break;
   case ARM_AUTO_CATCH_HIGH:
-    g_auto_catch_target_height = ARM_CATCH_HEIGHT_HIGH;
+    g_auto_catch_target_height = ARM_AUTO_CATCH_HIGH;
     break;
   default:
     return false;
@@ -261,7 +261,7 @@ bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   arm_vel_rotate_last = 0;
   arm_vel_height_last = 0;
 
-  AutoCatchEnterState(AUTO_CATCH_GO_HEIGHT, HAL_GetTick());
+  AutoCatchEnterState(AUTO_CATCH_ROTATE, HAL_GetTick());
   return true;
 }
 
@@ -303,13 +303,7 @@ void Arm_AutoCatchAbortKeepPump() {
   g_auto_catch_state = AUTO_CATCH_IDLE;
 }
 
-// 设置自动后退长度并做最小值限制。
-void Arm_SetAutoRetreatLength(float length_m) {
-  if (length_m < 0.05f) {
-    length_m = 0.05f;
-  }
-  g_auto_retreat_length_m = length_m;
-}
+
 
 // 主控制循环：自动抓取状态机与手动按键处理。
 static void Arm_softTIM(void *argument) {
@@ -332,50 +326,78 @@ static void Arm_softTIM(void *argument) {
 
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
-    case AUTO_CATCH_GO_HEIGHT:// 开始自动抓取流程，先去目标高度
-      vel_raiseandlower_motor->disable();
-      pos_raiseandlower_motor->enable();
-      pos_raiseandlower_motor->setRef(g_auto_catch_target_height);
-      if (AutoStepTimeout(ARM_AUTO_WAIT_HEIGHT_MS, now_ms)) {
-        AutoCatchEnterState(AUTO_CATCH_ROTATE_AND_PUMP, now_ms);
-      }
-      break;
-
-    case AUTO_CATCH_ROTATE_AND_PUMP: // 到达目标高度后并行旋转和吸泵
+    case AUTO_CATCH_ROTATE:// 开始自动抓取流程，先旋转出来，防止自身机构卡住
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_ROTATE_ANGLE);
-      Pump_Catch(&pump, 1);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_HEIGHT_MS, now_ms)) {
+        AutoCatchEnterState(AUTO_CATCH_HEIGHT_AND_PUMP, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_HEIGHT_AND_PUMP: //旋转之后进行高度调整和吸泵
+      vel_raiseandlower_motor->disable();
+      pos_raiseandlower_motor->enable();
+      switch (g_auto_catch_target_height) {
+      case ARM_AUTO_CATCH_LOW:
+        pos_raiseandlower_motor->setRef(ARM_CATCH_HEIGHT_LOW);
+        break;
+      case ARM_AUTO_CATCH_MID:
+        pos_raiseandlower_motor->setRef(ARM_CATCH_HEIGHT_MID);
+        break;
+      case ARM_AUTO_CATCH_HIGH:
+        pos_raiseandlower_motor->setRef(ARM_CATCH_HEIGHT_HIGH);
+        break;
+      }
       if (AutoStepTimeout(AutoRotateAndPumpWaitMs(), now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_PUSH_OUT, now_ms);
       }
       break;
 
-    case AUTO_CATCH_PUSH_OUT: // 吸稳后继续向前推一段距离，增加抓取稳定性
+    case AUTO_CATCH_PUSH_OUT: // 向前推出吸取卷轴，注意对不同高度的卷轴之后先旋转还是先去释放位置顺序不同
       vel_catch_motor->disable();
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_CATCH_PUSH_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_PUSH_MS, now_ms)) {
-        AutoCatchEnterState(AUTO_CATCH_ROTATE_BACK, now_ms);
-        AutoCatchEnterState(AUTO_CATCH_ROTATE_BACK, now_ms);
+        switch (g_auto_catch_target_height) {
+          case ARM_AUTO_CATCH_LOW:
+            AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE, now_ms);
+            break;
+          case ARM_AUTO_CATCH_MID:
+            AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE, now_ms);
+            break;
+          case ARM_AUTO_CATCH_HIGH:
+            AutoCatchEnterState(AUTO_CATCH_ROTATE_AND_GO_RELEASE_HEIGHT, now_ms);
+            break;
+        }
       }
       break;
 
-    case AUTO_CATCH_ROTATE_BACK: // 到达释放高度后旋转回初始位置准备放下物体,要先旋转再放下，防止卡住台阶
+    case AUTO_CATCH_ROTATE_AND_GO_RELEASE_HEIGHT: //先旋转再去释放高度的逻辑
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_RESET_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_MS, now_ms)) {
-        AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT, now_ms);
+        vel_raiseandlower_motor->disable();
+        pos_raiseandlower_motor->enable();
+        pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
+        if(AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_AND_RELEASE_HEIGHT, now_ms)) {
+          AutoCatchEnterState(AUTO_CATCH_RELEASE, now_ms);
+        }
       }
       break;
 
-    case AUTO_CATCH_GO_RELEASE_HEIGHT: // 旋转回初始位置后去释放高度准备放下物体
+    case AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE: // 先去释放高度再旋转的逻辑
       vel_raiseandlower_motor->disable();
       pos_raiseandlower_motor->enable();
       pos_raiseandlower_motor->setRef(ARM_RELEASE_HEIGHT);
       if (AutoStepTimeout(ARM_AUTO_WAIT_RELEASE_HEIGHT_MS, now_ms)) {
-        AutoCatchEnterState(AUTO_CATCH_RELEASE, now_ms);
+        vel_rotate_motor->disable();
+        pos_rotate_motor->enable();
+        pos_rotate_motor->setRef(ARM_RESET_ANGLE);
+        if(AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_BACK_AND_RELEASE_HEIGHT, now_ms)) {
+          AutoCatchEnterState(AUTO_CATCH_RELEASE, now_ms);
+        }
       }
       break;
 
