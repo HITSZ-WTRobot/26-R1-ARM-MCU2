@@ -77,14 +77,14 @@ static void Pump_Release(Pump_t *hpump, uint8_t enable) {
   Pump_RelayOff(hpump);
 }
 
-#define ARM_RESET_ANGLE 0.0f
-#define ARM_CATCH_PUSH_ANGLE 250.0f
-#define ARM_CATCH_PUSH_ANGLE_MAX 280.0f
-#define ARM_CATCH_HEIGHT_LOW -300.0f
-#define ARM_CATCH_HEIGHT_MID 400.0f
-#define ARM_CATCH_HEIGHT_HIGH 1050.0f
-#define ARM_RELEASE_HEIGHT 800.0f
-#define ARM_ROTATE_ANGLE 320.0f
+#define ARM_RESET_ANGLE 0.0f //初始位置的值设定
+#define ARM_CATCH_PUSH_ANGLE 85.0f //初始位置为收在最里面
+#define ARM_CATCH_PUSH_ANGLE_MAX 90.0f
+#define ARM_CATCH_HEIGHT_LOW -1300.0f //初始位置为顶端，这个值是从顶端往下数的，负值
+#define ARM_CATCH_HEIGHT_MID -707.0f
+#define ARM_CATCH_HEIGHT_HIGH 0.0f
+#define ARM_RELEASE_HEIGHT -229.0f
+#define ARM_ROTATE_ANGLE -305.0f //这个是从收回转到取物是-305，放下转回是0
 
 #define ARM_AUTO_WAIT_HEIGHT_MS 600U
 #define ARM_AUTO_WAIT_ROTATE_MS 300U
@@ -476,13 +476,13 @@ void Arm_Init(void) {
 
   controllers::MotorPosController::Config arm_catch_pos_cfg{};
   arm_catch_pos_cfg.velocity_pid.Kp = 500.0f;
-  arm_catch_pos_cfg.velocity_pid.Ki = 0.1f;
+  arm_catch_pos_cfg.velocity_pid.Ki = 0.2f;
   arm_catch_pos_cfg.velocity_pid.Kd = 0.0f;
-  arm_catch_pos_cfg.velocity_pid.abs_output_max = 4500.0f;
-  arm_catch_pos_cfg.position_pid.Kp = 2.0f;
-  arm_catch_pos_cfg.position_pid.Ki = 0.0f;
+  arm_catch_pos_cfg.velocity_pid.abs_output_max = 8000.0f;
+  arm_catch_pos_cfg.position_pid.Kp = 3.0f;
+  arm_catch_pos_cfg.position_pid.Ki = 0.1f;
   arm_catch_pos_cfg.position_pid.Kd = 0.2f;
-  arm_catch_pos_cfg.position_pid.abs_output_max = 200.0f;
+  arm_catch_pos_cfg.position_pid.abs_output_max = 800.0f;
   arm_catch_pos_cfg.pos_vel_freq_ratio = 10;
 
   controllers::MotorPosController::Config arm_rotate_pos_cfg{};
