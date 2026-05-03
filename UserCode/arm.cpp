@@ -141,6 +141,7 @@ enum AutoCatchState {
   AUTO_CATCH_ROTATE,
   AUTO_CATCH_HEIGHT_AND_PUMP,
   AUTO_CATCH_PUSH_OUT,
+  AUTO_CATCH_BACK,
   AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE,
   AUTO_CATCH_ROTATE_AND_GO_RELEASE_HEIGHT,
   AUTO_CATCH_RELEASE,
@@ -324,6 +325,8 @@ static void Arm_softTIM(void *argument) {
   pos_rotate_motor->enable();
   pos_rotate_motor->setRef(arm_pos_rotate);
 
+  Pump_Catch(&pump, 1);
+
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
     case AUTO_CATCH_ROTATE:// 开始自动抓取流程，先旋转出来，防止自身机构卡住
@@ -359,7 +362,16 @@ static void Arm_softTIM(void *argument) {
       pos_catch_motor->enable();
       pos_catch_motor->setRef(ARM_CATCH_PUSH_ANGLE);
       if (AutoStepTimeout(ARM_AUTO_WAIT_PUSH_MS, now_ms)) {
-        switch (g_auto_catch_target_height) {
+        AutoCatchEnterState(AUTO_CATCH_BACK, now_ms);
+      }
+      break;
+
+    case AUTO_CATCH_BACK: // 推出后先回到初始位置，避免放下时转动过大导致不稳
+      vel_catch_motor->disable();
+      pos_catch_motor->enable();
+      pos_catch_motor->setRef(ARM_AUTO_RETRACT_PUSH_ANGLE);
+      if (AutoStepTimeout(ARM_AUTO_WAIT_PUSH_MS, now_ms)) {
+          switch (g_auto_catch_target_height) {
           case ARM_AUTO_CATCH_LOW:
             AutoCatchEnterState(AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE, now_ms);
             break;
