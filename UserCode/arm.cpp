@@ -330,6 +330,8 @@ static void Arm_softTIM(void *argument) {
   pos_rotate_motor->enable();
   pos_rotate_motor->setRef(arm_pos_rotate);
 
+  Pump_Catch(&pump, 1);
+
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
     case AUTO_CATCH_GO_HEIGHT:// 开始自动抓取流程，先去目标高度
