@@ -56,6 +56,9 @@ startup_stm32*.s
 .project
 .cproject
 
+*.jdebug
+*.jdebug.user
+
 ### System files ###
 # OS-specific system files
 .DS_Store

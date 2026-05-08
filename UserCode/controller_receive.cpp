@@ -63,14 +63,11 @@ const osThreadAttr_t controller_attributes = {
 
 static void Auto_arm_control()
 {
-  constexpr float kAutoRetreatArmLengthM = 0.35f;
 
   if (button_status & (1U << 8)) {
     Arm_AutoCatchAbortKeepPump();
     return;
   }
-
-  Arm_SetAutoRetreatLength(kAutoRetreatArmLengthM);
 
   if (Arm_AutoCatchBusy()) {
     return;
