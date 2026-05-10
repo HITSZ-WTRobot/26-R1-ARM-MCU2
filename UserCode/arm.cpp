@@ -276,6 +276,10 @@ void Arm_AutoCatchAbortKeepPump() {
 
 // ================================ 遥控器接口函数和参数实现 ============================================
 
+ArmAutoCatchLevel level = ARM_AUTO_CATCH_HIGH; // 临时占位，应改为从拨码开关读取
+
+//下面的三个函数都是通过按键触发的
+
 // 启动自动抓取状态机并清零手动速度指令,通过这个函数可以从外部触发自动抓取流程，参数指定抓取的高度档位。
 bool Arm_AutoCatchStart(ArmAutoCatchLevel level) {
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
@@ -324,12 +328,22 @@ void Arm_Rotate_Out(bool enable) {
   Is_rotate_motor_out = true;
 }
 
+// 切换吸泵：吸取 <-> 释放
+void Arm_Pump_Toggle(void) {
+  static uint8_t pump_state = 0;
+  if (pump_state == 0) {
+    pump_state = 1;
+    Pump_Catch(&pump, 1);
+  } else {
+    pump_state = 0;
+    Pump_Release(&pump, 1);
+  }
+}
+
 // ================================ 预留的应用层钩子实现(包括主循环与初始化) ================================
 static void Arm_softTIM(void *argument) {
   (void)argument;
 
-  static uint8_t pump_state = 0;
-  static uint8_t height_state = 0;
   const uint32_t now_ms = HAL_GetTick();
 
   
@@ -464,21 +478,9 @@ static void Arm_softTIM(void *argument) {
 
   if ((osEventFlagsWait(flags_id, 0x00000008U, osFlagsWaitAny, 0) &
        0xFF000008U) == 0x00000008U) {
-    vel_raiseandlower_motor->disable();
-    pos_raiseandlower_motor->enable();
-    switch (height_state) {
-    case 0:
-      arm_pos_height = ARM_CATCH_HEIGHT_LOW;
-      break;
-    case 1:
-      arm_pos_height = ARM_CATCH_HEIGHT_MID;
-      break;
-    default:
-      arm_pos_height = ARM_CATCH_HEIGHT_HIGH;
-      break;
-    }
-    pos_raiseandlower_motor->setRef(arm_pos_height);
-    height_state = (height_state + 1) % 3;
+    // 读取拨码开关设置的高度档位，触发自动抓取
+    // 这里需要从外部接口获取拨码开关的值，例如 Get_DipSwitch_Level() 或类似的函数
+    Arm_AutoCatchStart(level);
   }
 
   if ((osEventFlagsWait(flags_id, 0x00000020U, osFlagsWaitAny, 0) &
@@ -488,13 +490,7 @@ static void Arm_softTIM(void *argument) {
 
   if ((osEventFlagsWait(flags_id, 0x00000040U, osFlagsWaitAny, 0) &
        0xFF000040U) == 0x00000040U) {
-    if (pump_state == 0) {
-      pump_state = 1;
-      Pump_Catch(&pump, 1);
-    } else {
-      pump_state = 0;
-      Pump_Release(&pump, 1);
-    }
+    Arm_Pump_Toggle();
   }
 }
 
