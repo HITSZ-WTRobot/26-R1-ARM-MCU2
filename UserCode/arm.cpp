@@ -106,6 +106,8 @@ static void Pump_Release(Pump_t *hpump, uint8_t enable) {
 using Motor_PosCtrl_t = controllers::MotorPosController;
 using Motor_VelCtrl_t = controllers::MotorVelController;
 
+bool Is_raiseandlower_motor_init = false;
+
 static void Pump_Init(Pump_t *hpump, const Pump_Config_t *config) {
   if (hpump == nullptr || config == nullptr) {
     return;
@@ -143,7 +145,7 @@ enum AutoCatchState {
   AUTO_CATCH_BACK,
   AUTO_CATCH_GO_RELEASE_HEIGHT_AND_ROTATE,
   AUTO_CATCH_ROTATE_AND_GO_RELEASE_HEIGHT,
-  AUTO_CATCH_RELEASE,
+  AUTO_CATCH_RELEASE
 };
 
 static volatile AutoCatchState g_auto_catch_state = AUTO_CATCH_IDLE;
@@ -468,6 +470,62 @@ static void Arm_softTIM(void *argument) {
   }
 }
 
+static void Arm_raiseandlower_reset(float vel) {
+  vel_raiseandlower_motor->enable();
+  vel_raiseandlower_motor->setRef(vel);
+  Is_raiseandlower_motor_init = true;
+
+  while (std::fabs(vel_raiseandlower_motor->getPID().getOutput()) < 5000.0f) {
+    osDelay(5);
+  }
+    // 检测输出稳定性（需保持500ms以上）
+    uint32_t stable_time_start = HAL_GetTick();
+    const uint32_t STABLE_THRESHOLD = 500;
+    
+    while (Is_raiseandlower_motor_init)
+    {
+        if (std::fabs(vel_raiseandlower_motor->getPID().getOutput()) >= 1500.0f)
+        {
+            // 输出保持在目标以上
+            if (HAL_GetTick() - stable_time_start >= STABLE_THRESHOLD)
+            {
+                Is_raiseandlower_motor_init = false;
+            }
+        }
+        else
+        {
+            // 输出下降到目标以下，重置计时器
+            stable_time_start = HAL_GetTick();
+        }
+        osDelay(1);
+    }
+}
+
+static void Arm_output_reset()
+{
+  vel_catch_motor->disable();
+  pos_catch_motor->disable();
+
+  vel_rotate_motor->disable();
+  pos_rotate_motor->disable();
+
+  vel_raiseandlower_motor->disable();
+  pos_raiseandlower_motor->disable();
+
+  arm_vel_out = 0;
+  arm_vel_rotate = 0;
+  arm_vel_height = 0;
+
+  arm_vel_out_last = 0;
+  arm_vel_rotate_last = 0;
+  arm_vel_height_last = 0;
+
+  arm_pos_out = 0;
+  arm_pos_rotate = 0;
+  arm_pos_height = 0;
+
+}
+
 // 初始化吸泵、控制器与 RTOS 钩子。
 void Arm_Init(void) {
   (void)ARM_CATCH_PUSH_ANGLE;
@@ -537,13 +595,11 @@ void Arm_Init(void) {
   pos_raiseandlower_motor =
       new Motor_PosCtrl_t(raiseandlower_motor, arm_raiseandlower_pos_cfg);
 
-  pos_catch_motor->disable();
-  vel_catch_motor->disable();
-  pos_raiseandlower_motor->disable();
-  vel_raiseandlower_motor->disable();
-  vel_rotate_motor->disable();
+  Arm_output_reset();
 
-  pos_rotate_motor->disable();
+  Arm_raiseandlower_reset(3000.0f);
+  
+  Arm_output_reset();
 
   ArmHandle = osThreadNew(Arm_Contrl_Task, NULL, &arm_attributes);
   arm_timHandle = osTimerNew(Arm_softTIM, osTimerPeriodic, NULL, NULL);
