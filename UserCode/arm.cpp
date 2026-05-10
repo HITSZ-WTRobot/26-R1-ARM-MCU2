@@ -86,16 +86,15 @@ static void Pump_Release(Pump_t *hpump, uint8_t enable) {
 #define ARM_RELEASE_HEIGHT -229.0f
 #define ARM_ROTATE_ANGLE -360.0f //这个是从收回转到取物是-360，放下转回是0
 
-#define ARM_AUTO_WAIT_HEIGHT_MS 600U
-#define ARM_AUTO_WAIT_ROTATE_MS 300U
-#define ARM_AUTO_WAIT_PUMP_ON_MS 100U
-#define ARM_AUTO_WAIT_PUSH_MS 300U
-#define ARM_AUTO_WAIT_RELEASE_HEIGHT_MS 600U
-#define ARM_AUTO_WAIT_ROTATE_BACK_MS 900U
-#define ARM_AUTO_WAIT_ROTATE_BACK_AND_RELEASE_HEIGHT 1500U
+#define ARM_AUTO_WAIT_HEIGHT_MS 500U
+#define ARM_AUTO_WAIT_ROTATE_MS 500U
+#define ARM_AUTO_WAIT_PUMP_ON_MS 50U
+#define ARM_AUTO_WAIT_PUSH_MS 600U
+#define ARM_AUTO_WAIT_RELEASE_HEIGHT_MS 1000U
+#define ARM_AUTO_WAIT_ROTATE_BACK_MS 1000U
+#define ARM_AUTO_WAIT_ROTATE_BACK_AND_RELEASE_HEIGHT 3500U
 #define ARM_AUTO_WAIT_RELEASE_MS 250U
 #define ARM_AUTO_RETRACT_PUSH_ANGLE 0.0f
-#define ARM_AUTO_RETREAT_SPEED_MPS 0.25f
 #define ARM_AUTO_RETREAT_MIN_TIME_MS 300U
 #define ARM_AUTO_RETREAT_MAX_TIME_MS 2500U
 
@@ -149,7 +148,7 @@ enum AutoCatchState {
 
 static volatile AutoCatchState g_auto_catch_state = AUTO_CATCH_IDLE;
 static volatile uint32_t g_auto_catch_state_start_ms = 0;
-static volatile ArmAutoCatchLevel g_auto_catch_target_height = ARM_AUTO_CATCH_LOW;
+static volatile ArmAutoCatchLevel g_auto_catch_target_height = ARM_AUTO_CATCH_HIGH;
 
 
 
@@ -222,12 +221,7 @@ static bool AutoStepTimeout(uint32_t wait_ms, uint32_t now_ms) {
   return (uint32_t)(now_ms - g_auto_catch_state_start_ms) >= wait_ms;
 }
 
-// 旋转与吸泵并行步骤取较长等待时间。
-static uint32_t AutoRotateAndPumpWaitMs() {
-  return (ARM_AUTO_WAIT_ROTATE_MS > ARM_AUTO_WAIT_PUMP_ON_MS)
-             ? ARM_AUTO_WAIT_ROTATE_MS
-             : ARM_AUTO_WAIT_PUMP_ON_MS;
-}
+
 
 // 切换自动抓取状态并记录进入时间。
 static void AutoCatchEnterState(AutoCatchState state, uint32_t now_ms) {
@@ -315,17 +309,8 @@ static void Arm_softTIM(void *argument) {
   static uint8_t rotate_state = 0;
 
   const uint32_t now_ms = HAL_GetTick();
-  vel_raiseandlower_motor->disable();
-  pos_raiseandlower_motor->enable();
-  pos_raiseandlower_motor->setRef(arm_pos_height);
-  pos_catch_motor->enable();
-  vel_catch_motor->disable();
-  pos_catch_motor->setRef(arm_pos_out);
-  vel_rotate_motor->disable();
-  pos_rotate_motor->enable();
-  pos_rotate_motor->setRef(arm_pos_rotate);
 
-  Pump_Catch(&pump, 1);
+
 
   if (g_auto_catch_state != AUTO_CATCH_IDLE) {
     switch (g_auto_catch_state) {
@@ -341,6 +326,7 @@ static void Arm_softTIM(void *argument) {
     case AUTO_CATCH_HEIGHT_AND_PUMP: //旋转之后进行高度调整和吸泵
       vel_raiseandlower_motor->disable();
       pos_raiseandlower_motor->enable();
+      Pump_Catch(&pump, 1);
       switch (g_auto_catch_target_height) {
       case ARM_AUTO_CATCH_LOW:
         pos_raiseandlower_motor->setRef(ARM_CATCH_HEIGHT_LOW);
@@ -352,7 +338,7 @@ static void Arm_softTIM(void *argument) {
         pos_raiseandlower_motor->setRef(ARM_CATCH_HEIGHT_HIGH);
         break;
       }
-      if (AutoStepTimeout(AutoRotateAndPumpWaitMs(), now_ms)) {
+      if (AutoStepTimeout(ARM_AUTO_WAIT_HEIGHT_MS, now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_PUSH_OUT, now_ms);
       }
       break;
@@ -538,7 +524,7 @@ void Arm_Init(void) {
   arm_raiseandlower_pos_cfg.position_pid.Kp = 1.6f;
   arm_raiseandlower_pos_cfg.position_pid.Ki = 0.0f;
   arm_raiseandlower_pos_cfg.position_pid.Kd = 0.6f;
-  arm_raiseandlower_pos_cfg.position_pid.abs_output_max = 100.0f;
+  arm_raiseandlower_pos_cfg.position_pid.abs_output_max = 300.0f;
   arm_raiseandlower_pos_cfg.pos_vel_freq_ratio = 1;
 
 
