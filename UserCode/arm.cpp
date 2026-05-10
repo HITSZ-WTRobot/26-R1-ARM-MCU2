@@ -318,7 +318,7 @@ static void Arm_softTIM(void *argument) {
       vel_rotate_motor->disable();
       pos_rotate_motor->enable();
       pos_rotate_motor->setRef(ARM_ROTATE_ANGLE);
-      if (AutoStepTimeout(ARM_AUTO_WAIT_HEIGHT_MS, now_ms)) {
+      if (AutoStepTimeout(ARM_AUTO_WAIT_ROTATE_MS, now_ms)) {
         AutoCatchEnterState(AUTO_CATCH_HEIGHT_AND_PUMP, now_ms);
       }
       break;
