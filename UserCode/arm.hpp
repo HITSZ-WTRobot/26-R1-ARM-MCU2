@@ -33,3 +33,4 @@ void Arm_SetAutoRetreatLength(float length_m);
 void APP_Arm_BeforeUpdate();
 void APP_Arm_Update_1kHz();
 void APP_Arm_Update_100Hz();
+void Arm_Rotate_Out(bool enable);
